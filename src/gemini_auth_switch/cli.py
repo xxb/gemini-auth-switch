@@ -184,6 +184,26 @@ def print_check_result(result: ProfileCheckResult) -> None:
     )
 
 
+def print_check_progress(event: str, payload: dict) -> None:
+    if event == "start":
+        email_part = f" email={payload['email']}" if payload.get("email") else ""
+        print(
+            f"checking {payload['index']}/{payload['total']} "
+            f"profile={payload['name']}{email_part}",
+            flush=True,
+        )
+        return
+    if event == "result":
+        print_check_result(payload["result"])
+        return
+    if event == "delay":
+        print(
+            f"waiting seconds={payload['seconds']:g} before profile "
+            f"{payload['next_index']}/{payload['total']}",
+            flush=True,
+        )
+
+
 def cmd_check_all(pool: GeminiAuthPool, args: argparse.Namespace) -> int:
     print("note=check-all reuses saved local credentials; it does not reopen browser login")
     print(
@@ -197,9 +217,8 @@ def cmd_check_all(pool: GeminiAuthPool, args: argparse.Namespace) -> int:
         delay_seconds=args.delay,
         limit=args.limit,
         gemini_args=args.gemini_arg,
+        progress_callback=print_check_progress,
     )
-    for result in results:
-        print_check_result(result)
 
     counts: dict[str, int] = {}
     for result in results:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 import hashlib
 import json
 import os
@@ -459,6 +460,7 @@ class GeminiAuthPool:
         delay_seconds: float = 5.0,
         limit: int | None = None,
         gemini_args: list[str] | None = None,
+        progress_callback: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> list[ProfileCheckResult]:
         names = self.list_profile_names()
         if not names:
@@ -475,6 +477,16 @@ class GeminiAuthPool:
             try:
                 for index, name in enumerate(names):
                     meta = self.load_profile_meta(name)
+                    if progress_callback is not None:
+                        progress_callback(
+                            "start",
+                            {
+                                "index": index + 1,
+                                "total": len(names),
+                                "name": name,
+                                "email": meta.get("email"),
+                            },
+                        )
                     try:
                         self.use_profile(name)
                         status, detail, returncode = self.probe_current_profile(
@@ -497,7 +509,25 @@ class GeminiAuthPool:
                             returncode=returncode,
                         )
                     )
+                    if progress_callback is not None:
+                        progress_callback(
+                            "result",
+                            {
+                                "index": index + 1,
+                                "total": len(names),
+                                "result": results[-1],
+                            },
+                        )
                     if delay_seconds > 0 and index + 1 < len(names):
+                        if progress_callback is not None:
+                            progress_callback(
+                                "delay",
+                                {
+                                    "seconds": delay_seconds,
+                                    "next_index": index + 2,
+                                    "total": len(names),
+                                },
+                            )
                         time.sleep(delay_seconds)
             finally:
                 self.restore_live_auth(backup_dir)

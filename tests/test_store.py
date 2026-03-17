@@ -169,6 +169,30 @@ class GeminiAuthPoolTests(unittest.TestCase):
         self.assertEqual(live_creds["refresh_token"], "rt-a")
         self.assertEqual(self.pool.current_profile_name(), "a")
 
+    def test_check_all_profiles_reports_progress_events(self) -> None:
+        self.seed_live_auth("rt-a", email="a@example.com")
+        self.pool.save_current("a")
+        self.seed_live_auth("rt-b", email="b@example.com")
+        self.pool.save_current("b")
+
+        events: list[tuple[str, dict]] = []
+
+        def fake_run(*_args, **_kwargs):
+            return SimpleNamespace(returncode=0, stdout="pong\n", stderr="")
+
+        def capture(event: str, payload: dict) -> None:
+            events.append((event, payload))
+
+        with patch("gemini_auth_switch.store.subprocess.run", side_effect=fake_run):
+            self.pool.check_all_profiles(delay_seconds=0.0, progress_callback=capture)
+
+        self.assertEqual(
+            [event for event, _payload in events],
+            ["start", "result", "start", "result"],
+        )
+        self.assertEqual(events[0][1]["name"], "a")
+        self.assertEqual(events[2][1]["name"], "b")
+
 
 if __name__ == "__main__":
     unittest.main()
