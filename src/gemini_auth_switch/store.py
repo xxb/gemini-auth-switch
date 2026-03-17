@@ -504,6 +504,42 @@ class GeminiAuthPool:
                 self.clear_token_caches()
         return results
 
+    def check_profile(
+        self,
+        name: str,
+        gemini_bin: str = "gemini",
+        prompt: str = "ping",
+        timeout_seconds: float = 30.0,
+        gemini_args: list[str] | None = None,
+    ) -> ProfileCheckResult:
+        profile_name = self.validate_profile_name(name)
+        if not self.profile_exists(profile_name):
+            raise PoolError(f"unknown profile: {profile_name}")
+
+        meta = self.load_profile_meta(profile_name)
+        with tempfile.TemporaryDirectory(prefix="gemini-auth-switch-check-one-") as temp_dir:
+            backup_dir = Path(temp_dir)
+            self.backup_live_auth(backup_dir)
+            try:
+                self.use_profile(profile_name)
+                status, detail, returncode = self.probe_current_profile(
+                    gemini_bin=gemini_bin,
+                    prompt=prompt,
+                    timeout_seconds=timeout_seconds,
+                    gemini_args=gemini_args,
+                )
+            finally:
+                self.restore_live_auth(backup_dir)
+                self.clear_token_caches()
+
+        return ProfileCheckResult(
+            name=profile_name,
+            email=meta.get("email"),
+            status=status,
+            detail=detail,
+            returncode=returncode,
+        )
+
     def login(
         self,
         profile_name: str | None,

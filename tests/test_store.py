@@ -142,6 +142,33 @@ class GeminiAuthPoolTests(unittest.TestCase):
         self.assertEqual(live_creds["refresh_token"], "rt-a")
         self.assertEqual(self.pool.current_profile_name(), "a")
 
+    def test_check_profile_restores_original_live_auth(self) -> None:
+        self.seed_live_auth("rt-a", email="a@example.com")
+        self.pool.save_current("a")
+        self.seed_live_auth("rt-b", email="b@example.com")
+        self.pool.save_current("b")
+        self.pool.use_profile("a")
+
+        def fake_run(*_args, **_kwargs):
+            live_creds = json.loads(self.paths.live_creds_file.read_text(encoding="utf-8"))
+            refresh_token = live_creds["refresh_token"]
+            if refresh_token == "rt-b":
+                return SimpleNamespace(
+                    returncode=1,
+                    stdout="",
+                    stderr="ValidationRequiredError: Verify your account to continue.\n",
+                )
+            return SimpleNamespace(returncode=0, stdout="pong\n", stderr="")
+
+        with patch("gemini_auth_switch.store.subprocess.run", side_effect=fake_run):
+            result = self.pool.check_profile("b")
+
+        self.assertEqual(result.name, "b")
+        self.assertEqual(result.status, "validation_required")
+        live_creds = json.loads(self.paths.live_creds_file.read_text(encoding="utf-8"))
+        self.assertEqual(live_creds["refresh_token"], "rt-a")
+        self.assertEqual(self.pool.current_profile_name(), "a")
+
 
 if __name__ == "__main__":
     unittest.main()

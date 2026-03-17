@@ -17,6 +17,31 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("list", help="List saved profiles")
     subparsers.add_parser("current", help="Show the current live profile match")
     subparsers.add_parser("doctor", help="Show auth diagnostics and common failure hints")
+    check_one_parser = subparsers.add_parser(
+        "check",
+        help="Probe one saved profile with a fresh Gemini subprocess",
+    )
+    check_one_parser.add_argument("name", help="Saved profile name to probe")
+    check_one_parser.add_argument(
+        "--gemini-bin", default="gemini", help="Gemini executable to launch"
+    )
+    check_one_parser.add_argument(
+        "--gemini-arg",
+        action="append",
+        default=[],
+        help="Extra argument passed to Gemini; may be supplied multiple times",
+    )
+    check_one_parser.add_argument(
+        "--prompt",
+        default="ping",
+        help="Prompt sent with `gemini -p` during the probe",
+    )
+    check_one_parser.add_argument(
+        "--timeout",
+        type=float,
+        default=30.0,
+        help="Probe timeout in seconds",
+    )
     check_parser = subparsers.add_parser(
         "check-all",
         help="Probe all saved profiles with a fresh Gemini subprocess",
@@ -185,6 +210,20 @@ def cmd_check_all(pool: GeminiAuthPool, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_check(pool: GeminiAuthPool, args: argparse.Namespace) -> int:
+    print("note=check reuses saved local credentials; it does not reopen browser login")
+    result = pool.check_profile(
+        args.name,
+        gemini_bin=args.gemini_bin,
+        prompt=args.prompt,
+        timeout_seconds=args.timeout,
+        gemini_args=args.gemini_arg,
+    )
+    print_check_result(result)
+    print("note=original live auth was restored after the probe run")
+    return 0
+
+
 def cmd_paths(pool: GeminiAuthPool) -> int:
     paths = pool.paths
     print(f"gemini_dir={paths.gemini_dir}")
@@ -206,6 +245,8 @@ def run(argv: Sequence[str] | None = None) -> int:
             return cmd_current(pool)
         if args.command == "doctor":
             return cmd_doctor(pool)
+        if args.command == "check":
+            return cmd_check(pool, args)
         if args.command == "check-all":
             return cmd_check_all(pool, args)
         if args.command == "paths":

@@ -3,7 +3,7 @@
 ## v0.1
 
 - profile storage under `~/.gemini/auth_profiles`
-- `save`, `list`, `current`, `doctor`, `check-all`, `use`, `next`, `remove`, `login`
+- `save`, `list`, `current`, `doctor`, `check`, `check-all`, `use`, `next`, `remove`, `login`
 - cache clearing on switch
 - repo docs that preserve requirements across sessions
 

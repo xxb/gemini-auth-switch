@@ -55,6 +55,7 @@ Inspect profiles:
 gswitch list
 gswitch current
 gswitch doctor
+gswitch check work@gmail.com
 gswitch check-all
 gswitch check-all --delay 15
 ```
@@ -99,6 +100,8 @@ If `gswitch use ...` changes the live profile but a fresh `gemini` launch still 
 Use `gswitch doctor` to confirm the active profile, auth type, and cache-file state. This project manages local OAuth files for `oauth-personal`; it does not bypass Google-side account eligibility or verification checks.
 
 `gswitch check-all` does not reopen browser login for every account. It reuses the saved local credentials, starts a fresh `gemini -p` subprocess per profile, and restores the original live auth after the probe run. That is still a burst of real authenticated Gemini requests, so use a non-zero `--delay` if you want to reduce rapid multi-account probing.
+
+If you only want to verify one account, use `gswitch check <profile>`. It performs the same kind of fresh-process probe as `check-all`, but only for the selected saved profile.
 
 ## Roadmap
 
