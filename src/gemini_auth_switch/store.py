@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,6 +30,15 @@ class ProfileSummary:
     created_at: str
     updated_at: str
     is_current: bool
+
+
+@dataclass
+class ProfileCheckResult:
+    name: str
+    email: str | None
+    status: str
+    detail: str
+    returncode: int | None
 
 
 def utc_now_iso() -> str:
@@ -75,6 +85,15 @@ def copy_file(source: Path, target: Path) -> None:
 def canonical_creds_fingerprint(payload: dict[str, Any]) -> str:
     data = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(data).hexdigest()
+
+
+def compact_output(text: str, limit: int = 160) -> str:
+    normalized = " ".join(text.split())
+    if not normalized:
+        return "-"
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: limit - 3] + "..."
 
 
 class GeminiAuthPool:
@@ -160,6 +179,12 @@ class GeminiAuthPool:
                 path.unlink()
             except FileNotFoundError:
                 pass
+
+    def build_gemini_env(self) -> dict[str, str]:
+        env = os.environ.copy()
+        env["GEMINI_FORCE_FILE_STORAGE"] = "true"
+        env["GEMINI_FORCE_ENCRYPTED_FILE_STORAGE"] = "false"
+        return env
 
     def list_profile_names(self) -> list[str]:
         self.ensure_layout()
@@ -365,6 +390,7 @@ class GeminiAuthPool:
             self.paths.live_creds_file,
             self.paths.live_account_id_file,
             self.paths.google_accounts_file,
+            self.paths.state_file,
         ):
             if source.exists():
                 copy_file(source, backup_dir / source.name)
@@ -374,6 +400,7 @@ class GeminiAuthPool:
             self.paths.live_creds_file,
             self.paths.live_account_id_file,
             self.paths.google_accounts_file,
+            self.paths.state_file,
         ):
             source = backup_dir / target.name
             if source.exists():
@@ -383,6 +410,99 @@ class GeminiAuthPool:
                     target.unlink()
                 except FileNotFoundError:
                     pass
+
+    def classify_probe_result(self, returncode: int, output: str) -> tuple[str, str]:
+        if returncode == 0:
+            if "pong" in output:
+                return "ok", "pong"
+            return "ok", compact_output(output)
+
+        lowered = output.lower()
+        if "validationrequirederror" in lowered or "verify your account" in lowered:
+            return "validation_required", "Verify your account to continue."
+        if "change login" in lowered or "change_auth" in lowered:
+            return "auth_change_required", "Gemini asked to change login."
+        return "error", compact_output(output)
+
+    def probe_current_profile(
+        self,
+        gemini_bin: str = "gemini",
+        prompt: str = "ping",
+        timeout_seconds: float = 30.0,
+        gemini_args: list[str] | None = None,
+    ) -> tuple[str, str, int | None]:
+        command = [gemini_bin, *(gemini_args or []), "-p", prompt]
+        try:
+            result = subprocess.run(
+                command,
+                env=self.build_gemini_env(),
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as exc:
+            output = (exc.stdout or "") + (exc.stderr or "")
+            detail = compact_output(output)
+            if detail == "-":
+                detail = f"probe timed out after {timeout_seconds:.1f}s"
+            return "timeout", detail, None
+
+        output = (result.stdout or "") + (result.stderr or "")
+        status, detail = self.classify_probe_result(result.returncode, output)
+        return status, detail, result.returncode
+
+    def check_all_profiles(
+        self,
+        gemini_bin: str = "gemini",
+        prompt: str = "ping",
+        timeout_seconds: float = 30.0,
+        delay_seconds: float = 5.0,
+        limit: int | None = None,
+        gemini_args: list[str] | None = None,
+    ) -> list[ProfileCheckResult]:
+        names = self.list_profile_names()
+        if not names:
+            raise PoolError("no saved profiles")
+        if limit is not None:
+            if limit <= 0:
+                raise PoolError("limit must be greater than zero")
+            names = names[:limit]
+
+        results: list[ProfileCheckResult] = []
+        with tempfile.TemporaryDirectory(prefix="gemini-auth-switch-check-") as temp_dir:
+            backup_dir = Path(temp_dir)
+            self.backup_live_auth(backup_dir)
+            try:
+                for index, name in enumerate(names):
+                    meta = self.load_profile_meta(name)
+                    try:
+                        self.use_profile(name)
+                        status, detail, returncode = self.probe_current_profile(
+                            gemini_bin=gemini_bin,
+                            prompt=prompt,
+                            timeout_seconds=timeout_seconds,
+                            gemini_args=gemini_args,
+                        )
+                    except Exception as exc:  # pragma: no cover - defensive guard
+                        status = "error"
+                        detail = compact_output(str(exc))
+                        returncode = None
+
+                    results.append(
+                        ProfileCheckResult(
+                            name=name,
+                            email=meta.get("email"),
+                            status=status,
+                            detail=detail,
+                            returncode=returncode,
+                        )
+                    )
+                    if delay_seconds > 0 and index + 1 < len(names):
+                        time.sleep(delay_seconds)
+            finally:
+                self.restore_live_auth(backup_dir)
+                self.clear_token_caches()
+        return results
 
     def login(
         self,
@@ -398,9 +518,7 @@ class GeminiAuthPool:
             self.clear_live_auth()
 
             command = [gemini_bin, *(gemini_args or [])]
-            env = os.environ.copy()
-            env["GEMINI_FORCE_FILE_STORAGE"] = "true"
-            env["GEMINI_FORCE_ENCRYPTED_FILE_STORAGE"] = "false"
+            env = self.build_gemini_env()
             result = subprocess.run(command, env=env)
             if result.returncode != 0:
                 self.restore_live_auth(backup_dir)

@@ -4,7 +4,7 @@ import argparse
 from typing import Sequence
 
 from .paths import GeminiPaths
-from .store import GeminiAuthPool, PoolError, ProfileSummary
+from .store import GeminiAuthPool, PoolError, ProfileCheckResult, ProfileSummary
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -17,6 +17,39 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("list", help="List saved profiles")
     subparsers.add_parser("current", help="Show the current live profile match")
     subparsers.add_parser("doctor", help="Show auth diagnostics and common failure hints")
+    check_parser = subparsers.add_parser(
+        "check-all",
+        help="Probe all saved profiles with a fresh Gemini subprocess",
+    )
+    check_parser.add_argument("--gemini-bin", default="gemini", help="Gemini executable to launch")
+    check_parser.add_argument(
+        "--gemini-arg",
+        action="append",
+        default=[],
+        help="Extra argument passed to Gemini; may be supplied multiple times",
+    )
+    check_parser.add_argument(
+        "--prompt",
+        default="ping",
+        help="Prompt sent with `gemini -p` during each probe",
+    )
+    check_parser.add_argument(
+        "--timeout",
+        type=float,
+        default=30.0,
+        help="Per-profile probe timeout in seconds",
+    )
+    check_parser.add_argument(
+        "--delay",
+        type=float,
+        default=5.0,
+        help="Sleep between profiles in seconds to reduce rapid probing",
+    )
+    check_parser.add_argument(
+        "--limit",
+        type=int,
+        help="Only probe the first N saved profiles",
+    )
 
     save_parser = subparsers.add_parser("save", help="Save the current live account")
     save_parser.add_argument("name", nargs="?", help="Profile name; defaults to live email if available")
@@ -115,6 +148,43 @@ def cmd_doctor(pool: GeminiAuthPool) -> int:
     return 0
 
 
+def print_check_result(result: ProfileCheckResult) -> None:
+    email_part = f" email={result.email}" if result.email else ""
+    returncode_part = (
+        f" returncode={result.returncode}" if result.returncode is not None else ""
+    )
+    print(
+        f"{result.status} profile={result.name}{email_part}"
+        f"{returncode_part} detail={result.detail}"
+    )
+
+
+def cmd_check_all(pool: GeminiAuthPool, args: argparse.Namespace) -> int:
+    print("note=check-all reuses saved local credentials; it does not reopen browser login")
+    print(
+        "note=each probe still starts a fresh Gemini process and API request; "
+        "use --delay to reduce rapid multi-account probing"
+    )
+    results = pool.check_all_profiles(
+        gemini_bin=args.gemini_bin,
+        prompt=args.prompt,
+        timeout_seconds=args.timeout,
+        delay_seconds=args.delay,
+        limit=args.limit,
+        gemini_args=args.gemini_arg,
+    )
+    for result in results:
+        print_check_result(result)
+
+    counts: dict[str, int] = {}
+    for result in results:
+        counts[result.status] = counts.get(result.status, 0) + 1
+    summary = " ".join(f"{name}={counts[name]}" for name in sorted(counts))
+    print(f"summary total={len(results)} {summary}")
+    print("note=original live auth was restored after the probe run")
+    return 0
+
+
 def cmd_paths(pool: GeminiAuthPool) -> int:
     paths = pool.paths
     print(f"gemini_dir={paths.gemini_dir}")
@@ -136,6 +206,8 @@ def run(argv: Sequence[str] | None = None) -> int:
             return cmd_current(pool)
         if args.command == "doctor":
             return cmd_doctor(pool)
+        if args.command == "check-all":
+            return cmd_check_all(pool, args)
         if args.command == "paths":
             return cmd_paths(pool)
         if args.command == "save":

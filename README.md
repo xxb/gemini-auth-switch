@@ -24,6 +24,7 @@ Small, Linux-first account pooling for the official Gemini CLI.
 - List saved profiles
 - Show the current live profile match
 - Show auth diagnostics and common failure hints
+- Probe all saved profiles and classify which ones still work
 - Switch to a saved profile
 - Rotate to the next saved profile
 - Remove a saved profile
@@ -54,6 +55,8 @@ Inspect profiles:
 gswitch list
 gswitch current
 gswitch doctor
+gswitch check-all
+gswitch check-all --delay 15
 ```
 
 Switch accounts:
@@ -94,6 +97,8 @@ Gemini CLI sessions typically cache auth state after startup. After switching pr
 If `gswitch use ...` changes the live profile but a fresh `gemini` launch still says "Verify your account" or offers "change login", that is usually not a local switch failure. The official Gemini CLI can return `VALIDATION_REQUIRED` for a specific Google account, and the reference `Gemini-CLI-Auth-Manager` project documents the same behavior.
 
 Use `gswitch doctor` to confirm the active profile, auth type, and cache-file state. This project manages local OAuth files for `oauth-personal`; it does not bypass Google-side account eligibility or verification checks.
+
+`gswitch check-all` does not reopen browser login for every account. It reuses the saved local credentials, starts a fresh `gemini -p` subprocess per profile, and restores the original live auth after the probe run. That is still a burst of real authenticated Gemini requests, so use a non-zero `--delay` if you want to reduce rapid multi-account probing.
 
 ## Roadmap
 
