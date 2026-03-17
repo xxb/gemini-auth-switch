@@ -1,5 +1,9 @@
 # gemini-auth-switch
 
+[![MIT License](https://img.shields.io/github/license/xxb/gemini-auth-switch)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](pyproject.toml)
+[![GitHub tag](https://img.shields.io/github/v/tag/xxb/gemini-auth-switch?label=version)](https://github.com/xxb/gemini-auth-switch/releases)
+
 Small, Linux-first account pooling for the official Gemini CLI.
 
 `gemini-auth-switch` keeps multiple OAuth profiles under `~/.gemini/auth_profiles/`, lets you switch between them quickly, and prepares the ground for automatic account rotation when one Gemini account runs out of quota.
@@ -46,7 +50,7 @@ Save the currently logged-in account:
 
 ```bash
 gswitch save
-gswitch save work@gmail.com
+gswitch save work@example.com
 gswitch save trading-burner
 ```
 
@@ -57,7 +61,7 @@ gswitch list
 gswitch list --verbose
 gswitch current
 gswitch doctor
-gswitch check work@gmail.com
+gswitch check work@example.com
 gswitch check-all
 gswitch check-all --delay 15
 ```
@@ -67,7 +71,7 @@ gswitch check-all --delay 15
 Switch accounts:
 
 ```bash
-gswitch use work@gmail.com
+gswitch use work@example.com
 gswitch next
 ```
 
@@ -86,12 +90,28 @@ The tool writes only under `~/.gemini`:
 ```text
 ~/.gemini/
   auth_profiles/
-    work@gmail.com/
+    work@example.com/
       oauth_creds.json
       google_account_id
       profile.json
   auth_pool_state.json
   auth_check_state.json
+```
+
+## Example Output
+
+Compact list view:
+
+```text
+  primary@example.com   email=primary@example.com   status=ok                  checked=2026-03-17T05:31:38+00:00
+* research@example.com  email=research@example.com  status=validation_required checked=2026-03-17T05:33:02+00:00
+  backup@example.com    email=backup@example.com    status=timeout             checked=2026-03-17T05:34:11+00:00
+```
+
+Verbose list view:
+
+```text
+* research@example.com  email=research@example.com  status=validation_required checked=2026-03-17T05:33:02+00:00 updated=2026-03-17T03:44:22+00:00 detail=Verify your account to continue.
 ```
 
 ## Restart Behavior

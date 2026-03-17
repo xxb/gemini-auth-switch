@@ -25,6 +25,11 @@ classifiers = [
   "Topic :: Utilities"
 ]
 
+[project.urls]
+Repository = "https://github.com/xxb/gemini-auth-switch"
+Issues = "https://github.com/xxb/gemini-auth-switch/issues"
+Changelog = "https://github.com/xxb/gemini-auth-switch/releases"
+
 [project.scripts]
 gswitch = "gemini_auth_switch.cli:main"
 
