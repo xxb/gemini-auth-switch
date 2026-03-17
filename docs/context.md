@@ -38,9 +38,16 @@ v0.1 must provide:
 
 - save current live account
 - list accounts
+- show last known probe status per account
 - switch account
 - rotate to next account
+- probe one or all saved accounts with a fresh Gemini subprocess
 - launch a fresh login and capture it as a new profile
+
+## Local State Files
+
+- `auth_pool_state.json` tracks the locally selected live profile.
+- `auth_check_state.json` stores the latest probe result per saved profile so later sessions can inspect recent account health without rerunning probes first.
 
 ## Deferred Scope
 

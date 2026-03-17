@@ -31,6 +31,10 @@ class ProfileSummary:
     created_at: str
     updated_at: str
     is_current: bool
+    last_check_status: str | None = None
+    last_check_detail: str | None = None
+    last_check_returncode: int | None = None
+    last_checked_at: str | None = None
 
 
 @dataclass
@@ -40,6 +44,7 @@ class ProfileCheckResult:
     status: str
     detail: str
     returncode: int | None
+    checked_at: str
 
 
 def utc_now_iso() -> str:
@@ -97,6 +102,16 @@ def compact_output(text: str, limit: int = 160) -> str:
     return normalized[: limit - 3] + "..."
 
 
+def normalize_subprocess_output(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    if isinstance(value, str):
+        return value
+    return str(value)
+
+
 class GeminiAuthPool:
     def __init__(self, paths: GeminiPaths):
         self.paths = paths
@@ -152,6 +167,45 @@ class GeminiAuthPool:
             "last_switched_at": utc_now_iso(),
         }
         write_json(self.paths.state_file, state)
+
+    def load_check_state(self) -> dict[str, Any]:
+        state = load_json(self.paths.check_state_file, {"profiles": {}, "updated_at": None})
+        if not isinstance(state, dict):
+            return {"profiles": {}, "updated_at": None}
+        profiles = state.get("profiles")
+        if not isinstance(profiles, dict):
+            profiles = {}
+        updated_at = state.get("updated_at")
+        if updated_at is not None and not isinstance(updated_at, str):
+            updated_at = None
+        return {"profiles": profiles, "updated_at": updated_at}
+
+    def load_check_result(self, profile_name: str) -> dict[str, Any] | None:
+        profiles = self.load_check_state()["profiles"]
+        entry = profiles.get(profile_name)
+        return entry if isinstance(entry, dict) else None
+
+    def write_check_result(self, result: ProfileCheckResult) -> None:
+        state = self.load_check_state()
+        profiles = state["profiles"]
+        profiles[result.name] = {
+            "status": result.status,
+            "detail": result.detail,
+            "returncode": result.returncode,
+            "checked_at": result.checked_at,
+            "email": result.email,
+        }
+        state["updated_at"] = result.checked_at
+        write_json(self.paths.check_state_file, state)
+
+    def drop_check_result(self, profile_name: str) -> None:
+        state = self.load_check_state()
+        profiles = state["profiles"]
+        if profile_name not in profiles:
+            return
+        del profiles[profile_name]
+        state["updated_at"] = utc_now_iso()
+        write_json(self.paths.check_state_file, state)
 
     def update_google_accounts(self, active_email: str | None) -> None:
         data = load_json(self.paths.google_accounts_file, {"active": None, "old": []})
@@ -264,9 +318,17 @@ class GeminiAuthPool:
 
     def list_profiles(self) -> list[ProfileSummary]:
         current_name = self.current_profile_name()
+        check_profiles = self.load_check_state()["profiles"]
         summaries: list[ProfileSummary] = []
         for name in self.list_profile_names():
             meta = self.load_profile_meta(name)
+            check_entry = check_profiles.get(name)
+            if not isinstance(check_entry, dict):
+                check_entry = {}
+            check_status = check_entry.get("status")
+            check_detail = check_entry.get("detail")
+            check_returncode = check_entry.get("returncode")
+            checked_at = check_entry.get("checked_at")
             summaries.append(
                 ProfileSummary(
                     name=name,
@@ -274,6 +336,12 @@ class GeminiAuthPool:
                     created_at=meta.get("created_at", ""),
                     updated_at=meta.get("updated_at", ""),
                     is_current=name == current_name,
+                    last_check_status=check_status if isinstance(check_status, str) else None,
+                    last_check_detail=check_detail if isinstance(check_detail, str) else None,
+                    last_check_returncode=(
+                        check_returncode if isinstance(check_returncode, int) else None
+                    ),
+                    last_checked_at=checked_at if isinstance(checked_at, str) else None,
                 )
             )
         return summaries
@@ -369,6 +437,7 @@ class GeminiAuthPool:
         if not profile_dir.exists():
             raise PoolError(f"unknown profile: {profile_name}")
         shutil.rmtree(profile_dir)
+        self.drop_check_result(profile_name)
         if self.current_profile_name() == profile_name:
             self.write_state(None)
 
@@ -425,6 +494,23 @@ class GeminiAuthPool:
             return "auth_change_required", "Gemini asked to change login."
         return "error", compact_output(output)
 
+    def make_check_result(
+        self,
+        name: str,
+        email: str | None,
+        status: str,
+        detail: str,
+        returncode: int | None,
+    ) -> ProfileCheckResult:
+        return ProfileCheckResult(
+            name=name,
+            email=email,
+            status=status,
+            detail=detail,
+            returncode=returncode,
+            checked_at=utc_now_iso(),
+        )
+
     def probe_current_profile(
         self,
         gemini_bin: str = "gemini",
@@ -442,13 +528,13 @@ class GeminiAuthPool:
                 timeout=timeout_seconds,
             )
         except subprocess.TimeoutExpired as exc:
-            output = (exc.stdout or "") + (exc.stderr or "")
+            output = normalize_subprocess_output(exc.stdout) + normalize_subprocess_output(exc.stderr)
             detail = compact_output(output)
             if detail == "-":
                 detail = f"probe timed out after {timeout_seconds:.1f}s"
             return "timeout", detail, None
 
-        output = (result.stdout or "") + (result.stderr or "")
+        output = normalize_subprocess_output(result.stdout) + normalize_subprocess_output(result.stderr)
         status, detail = self.classify_probe_result(result.returncode, output)
         return status, detail, result.returncode
 
@@ -500,15 +586,15 @@ class GeminiAuthPool:
                         detail = compact_output(str(exc))
                         returncode = None
 
-                    results.append(
-                        ProfileCheckResult(
-                            name=name,
-                            email=meta.get("email"),
-                            status=status,
-                            detail=detail,
-                            returncode=returncode,
-                        )
+                    result = self.make_check_result(
+                        name=name,
+                        email=meta.get("email"),
+                        status=status,
+                        detail=detail,
+                        returncode=returncode,
                     )
+                    self.write_check_result(result)
+                    results.append(result)
                     if progress_callback is not None:
                         progress_callback(
                             "result",
@@ -551,24 +637,31 @@ class GeminiAuthPool:
             backup_dir = Path(temp_dir)
             self.backup_live_auth(backup_dir)
             try:
-                self.use_profile(profile_name)
-                status, detail, returncode = self.probe_current_profile(
-                    gemini_bin=gemini_bin,
-                    prompt=prompt,
-                    timeout_seconds=timeout_seconds,
-                    gemini_args=gemini_args,
-                )
+                try:
+                    self.use_profile(profile_name)
+                    status, detail, returncode = self.probe_current_profile(
+                        gemini_bin=gemini_bin,
+                        prompt=prompt,
+                        timeout_seconds=timeout_seconds,
+                        gemini_args=gemini_args,
+                    )
+                except Exception as exc:  # pragma: no cover - defensive guard
+                    status = "error"
+                    detail = compact_output(str(exc))
+                    returncode = None
             finally:
                 self.restore_live_auth(backup_dir)
                 self.clear_token_caches()
 
-        return ProfileCheckResult(
+        result = self.make_check_result(
             name=profile_name,
             email=meta.get("email"),
             status=status,
             detail=detail,
             returncode=returncode,
         )
+        self.write_check_result(result)
+        return result
 
     def login(
         self,

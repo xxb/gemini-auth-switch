@@ -25,6 +25,7 @@ Small, Linux-first account pooling for the official Gemini CLI.
 - Show the current live profile match
 - Show auth diagnostics and common failure hints
 - Probe all saved profiles and classify which ones still work
+- Persist the latest probe result for each profile and show it in `gswitch list`
 - Switch to a saved profile
 - Rotate to the next saved profile
 - Remove a saved profile
@@ -53,12 +54,15 @@ Inspect profiles:
 
 ```bash
 gswitch list
+gswitch list --verbose
 gswitch current
 gswitch doctor
 gswitch check work@gmail.com
 gswitch check-all
 gswitch check-all --delay 15
 ```
+
+`gswitch check` and `gswitch check-all` both save the latest probe result. By default `gswitch list` stays compact and shows the last known status and timestamp; use `gswitch list --verbose` when you also want saved-at time and short probe detail.
 
 Switch accounts:
 
@@ -87,6 +91,7 @@ The tool writes only under `~/.gemini`:
       google_account_id
       profile.json
   auth_pool_state.json
+  auth_check_state.json
 ```
 
 ## Restart Behavior
@@ -99,7 +104,7 @@ If `gswitch use ...` changes the live profile but a fresh `gemini` launch still 
 
 Use `gswitch doctor` to confirm the active profile, auth type, and cache-file state. This project manages local OAuth files for `oauth-personal`; it does not bypass Google-side account eligibility or verification checks.
 
-`gswitch check-all` does not reopen browser login for every account. It reuses the saved local credentials, starts a fresh `gemini -p` subprocess per profile, streams progress as each profile finishes, and restores the original live auth after the probe run. That is still a burst of real authenticated Gemini requests, so use a non-zero `--delay` if you want to reduce rapid multi-account probing.
+`gswitch check-all` does not reopen browser login for every account. It reuses the saved local credentials, starts a fresh `gemini -p` subprocess per profile, streams progress as each profile finishes, prints a final results summary, stores the latest result in `auth_check_state.json`, and restores the original live auth after the probe run. That is still a burst of real authenticated Gemini requests, so use a non-zero `--delay` if you want to reduce rapid multi-account probing.
 
 If you only want to verify one account, use `gswitch check <profile>`. It performs the same kind of fresh-process probe as `check-all`, but only for the selected saved profile.
 

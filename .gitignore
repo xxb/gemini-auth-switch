@@ -7,6 +7,8 @@ CLAUDE.md
 .codex/
 .claude/
 .gemini/
+auth_check_state.json
+auth_pool_state.json
 
 # Environment and secrets
 .env

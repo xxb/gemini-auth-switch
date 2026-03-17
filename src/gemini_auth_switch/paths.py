@@ -38,6 +38,10 @@ class GeminiPaths:
         return self.gemini_dir / "auth_pool_state.json"
 
     @property
+    def check_state_file(self) -> Path:
+        return self.gemini_dir / "auth_check_state.json"
+
+    @property
     def token_cache_v1(self) -> Path:
         return self.gemini_dir / "mcp-oauth-tokens.json"
 

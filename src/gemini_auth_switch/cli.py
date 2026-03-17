@@ -4,7 +4,13 @@ import argparse
 from typing import Sequence
 
 from .paths import GeminiPaths
-from .store import GeminiAuthPool, PoolError, ProfileCheckResult, ProfileSummary
+from .store import (
+    GeminiAuthPool,
+    PoolError,
+    ProfileCheckResult,
+    ProfileSummary,
+    compact_output,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -14,7 +20,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    subparsers.add_parser("list", help="List saved profiles")
+    list_parser = subparsers.add_parser("list", help="List saved profiles")
+    list_parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Show extra fields such as saved-at time and probe detail",
+    )
     subparsers.add_parser("current", help="Show the current live profile match")
     subparsers.add_parser("doctor", help="Show auth diagnostics and common failure hints")
     check_one_parser = subparsers.add_parser(
@@ -117,18 +128,49 @@ def print_post_switch_notes() -> None:
     )
 
 
-def cmd_list(pool: GeminiAuthPool) -> int:
+def print_profile_summaries(profiles: list[ProfileSummary], verbose: bool = False) -> None:
+    name_width = max(len(summary.name) for summary in profiles)
+    email_width = max(len(summary.email or "-") for summary in profiles)
+    for summary in profiles:
+        marker = "*" if summary.is_current else " "
+        email = summary.email or "-"
+        status = summary.last_check_status or "-"
+        checked = summary.last_checked_at or "-"
+        line = (
+            f"{marker} {summary.name:<{name_width}} "
+            f"email={email:<{email_width}} "
+            f"status={status:<20} "
+            f"checked={checked}"
+        )
+        if verbose:
+            detail = compact_output(summary.last_check_detail or "-", limit=96)
+            line = f"{line} updated={summary.updated_at or '-'} detail={detail}"
+        print(line)
+
+
+def print_check_summary(results: list[ProfileCheckResult]) -> None:
+    name_width = max(len(result.name) for result in results)
+    email_width = max(len(result.email or "-") for result in results)
+    status_width = max(len(result.status) for result in results)
+    for result in results:
+        email = result.email or "-"
+        detail = compact_output(result.detail, limit=96)
+        print(
+            f"  {result.name:<{name_width}} "
+            f"email={email:<{email_width}} "
+            f"status={result.status:<{status_width}} "
+            f"checked={result.checked_at} "
+            f"detail={detail}"
+        )
+
+
+def cmd_list(pool: GeminiAuthPool, args: argparse.Namespace) -> int:
     profiles = pool.list_profiles()
     if not profiles:
         print("no saved profiles")
         return 0
 
-    for summary in profiles:
-        marker = "*" if summary.is_current else " "
-        email = summary.email or "-"
-        print(
-            f"{marker} {summary.name:<24} email={email:<30} updated={summary.updated_at}"
-        )
+    print_profile_summaries(profiles, verbose=args.verbose)
     return 0
 
 
@@ -225,6 +267,8 @@ def cmd_check_all(pool: GeminiAuthPool, args: argparse.Namespace) -> int:
         counts[result.status] = counts.get(result.status, 0) + 1
     summary = " ".join(f"{name}={counts[name]}" for name in sorted(counts))
     print(f"summary total={len(results)} {summary}")
+    print("results:")
+    print_check_summary(results)
     print("note=original live auth was restored after the probe run")
     return 0
 
@@ -249,6 +293,7 @@ def cmd_paths(pool: GeminiAuthPool) -> int:
     print(f"profiles_dir={paths.profiles_dir}")
     print(f"live_creds={paths.live_creds_file}")
     print(f"state_file={paths.state_file}")
+    print(f"check_state_file={paths.check_state_file}")
     return 0
 
 
@@ -259,7 +304,7 @@ def run(argv: Sequence[str] | None = None) -> int:
 
     try:
         if args.command == "list":
-            return cmd_list(pool)
+            return cmd_list(pool, args)
         if args.command == "current":
             return cmd_current(pool)
         if args.command == "doctor":
