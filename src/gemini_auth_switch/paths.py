@@ -26,6 +26,10 @@ class GeminiPaths:
         return self.gemini_dir / "google_accounts.json"
 
     @property
+    def settings_file(self) -> Path:
+        return self.gemini_dir / "settings.json"
+
+    @property
     def profiles_dir(self) -> Path:
         return self.gemini_dir / "auth_profiles"
 
@@ -52,4 +56,3 @@ class GeminiPaths:
 
     def profile_account_id_file(self, profile_name: str) -> Path:
         return self.profile_dir(profile_name) / "google_account_id"
-

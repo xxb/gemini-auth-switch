@@ -44,6 +44,12 @@ class GeminiAuthPoolTests(unittest.TestCase):
         write_json(self.paths.google_accounts_file, {"active": email, "old": []})
         self.paths.live_account_id_file.write_text("account-id", encoding="utf-8")
 
+    def seed_settings(self, selected_type: str = "oauth-personal") -> None:
+        write_json(
+            self.paths.settings_file,
+            {"security": {"auth": {"selectedType": selected_type}}},
+        )
+
     def test_save_and_list_profile(self) -> None:
         self.seed_live_auth("rt-1")
         summary = self.pool.save_current()
@@ -88,6 +94,20 @@ class GeminiAuthPoolTests(unittest.TestCase):
         accounts = json.loads(self.paths.google_accounts_file.read_text(encoding="utf-8"))
         self.assertEqual(live_creds["refresh_token"], "rt-1")
         self.assertEqual(accounts["active"], "keep@example.com")
+
+    def test_diagnostics_summary_reports_auth_and_cache_state(self) -> None:
+        self.seed_live_auth("rt-1", email="diag@example.com")
+        self.seed_settings()
+        self.pool.save_current("diag")
+        self.paths.token_cache_v2.write_text("cached", encoding="utf-8")
+
+        summary = self.pool.diagnostics_summary()
+
+        self.assertEqual(summary["profile"], "diag")
+        self.assertEqual(summary["email"], "diag@example.com")
+        self.assertEqual(summary["selected_auth_type"], "oauth-personal")
+        self.assertFalse(summary["token_cache_v1_exists"])
+        self.assertTrue(summary["token_cache_v2_exists"])
 
 
 if __name__ == "__main__":

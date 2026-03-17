@@ -3,7 +3,7 @@
 ## v0.1
 
 - profile storage under `~/.gemini/auth_profiles`
-- `save`, `list`, `current`, `use`, `next`, `remove`, `login`
+- `save`, `list`, `current`, `doctor`, `use`, `next`, `remove`, `login`
 - cache clearing on switch
 - repo docs that preserve requirements across sessions
 
@@ -18,5 +18,4 @@
 
 - slash-command helpers under `~/.gemini/commands`
 - JSON output mode
-- better diagnostics and dry-run support
-
+- dry-run support

@@ -16,6 +16,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("list", help="List saved profiles")
     subparsers.add_parser("current", help="Show the current live profile match")
+    subparsers.add_parser("doctor", help="Show auth diagnostics and common failure hints")
 
     save_parser = subparsers.add_parser("save", help="Save the current live account")
     save_parser.add_argument("name", nargs="?", help="Profile name; defaults to live email if available")
@@ -50,6 +51,14 @@ def print_profile(summary: ProfileSummary, switched: bool = False) -> None:
     print(f"{prefix} profile={summary.name}{email_part}")
 
 
+def print_post_switch_notes() -> None:
+    print("restart any running Gemini CLI session to apply the new account")
+    print(
+        "if a fresh Gemini launch asks to verify your account or change login, "
+        "that is usually a Google-side account validation issue for that profile"
+    )
+
+
 def cmd_list(pool: GeminiAuthPool) -> int:
     profiles = pool.list_profiles()
     if not profiles:
@@ -70,7 +79,39 @@ def cmd_current(pool: GeminiAuthPool) -> int:
     print(f"profile={current['profile'] or '-'}")
     print(f"email={current['email'] or '-'}")
     print(f"has_live_creds={str(current['has_live_creds']).lower()}")
+    print(f"selected_auth_type={current['selected_auth_type'] or '-'}")
     print(f"live_creds_path={current['live_creds_path']}")
+    return 0
+
+
+def cmd_doctor(pool: GeminiAuthPool) -> int:
+    summary = pool.diagnostics_summary()
+    print(f"profile={summary['profile'] or '-'}")
+    print(f"email={summary['email'] or '-'}")
+    print(f"has_live_creds={str(summary['has_live_creds']).lower()}")
+    print(f"selected_auth_type={summary['selected_auth_type'] or '-'}")
+    print(f"token_cache_v1_exists={str(summary['token_cache_v1_exists']).lower()}")
+    print(f"token_cache_v2_exists={str(summary['token_cache_v2_exists']).lower()}")
+    print(f"force_file_storage={str(summary['force_file_storage']).lower()}")
+    print(
+        "force_encrypted_file_storage="
+        f"{str(summary['force_encrypted_file_storage']).lower()}"
+    )
+    print("note=restart any running Gemini CLI session after switching accounts")
+    if summary["selected_auth_type"] not in {None, "oauth-personal"}:
+        print(
+            "warning=selected auth type is not oauth-personal; "
+            "gswitch only manages Gemini OAuth personal accounts"
+        )
+    if summary["force_encrypted_file_storage"]:
+        print(
+            "warning=GEMINI_FORCE_ENCRYPTED_FILE_STORAGE=true makes Gemini prefer "
+            "encrypted storage instead of oauth_creds.json"
+        )
+    print(
+        "note=if a fresh Gemini launch asks to verify your account or change login, "
+        "that is usually Google-side account validation rather than a failed local switch"
+    )
     return 0
 
 
@@ -93,6 +134,8 @@ def run(argv: Sequence[str] | None = None) -> int:
             return cmd_list(pool)
         if args.command == "current":
             return cmd_current(pool)
+        if args.command == "doctor":
+            return cmd_doctor(pool)
         if args.command == "paths":
             return cmd_paths(pool)
         if args.command == "save":
@@ -102,12 +145,12 @@ def run(argv: Sequence[str] | None = None) -> int:
         if args.command == "use":
             summary = pool.use_profile(args.name)
             print_profile(summary, switched=True)
-            print("restart any running Gemini CLI session to apply the new account")
+            print_post_switch_notes()
             return 0
         if args.command == "next":
             summary = pool.next_profile()
             print_profile(summary, switched=True)
-            print("restart any running Gemini CLI session to apply the new account")
+            print_post_switch_notes()
             return 0
         if args.command == "remove":
             pool.remove_profile(args.name)
@@ -123,6 +166,7 @@ def run(argv: Sequence[str] | None = None) -> int:
                 overwrite=args.overwrite,
             )
             print_profile(summary)
+            print_post_switch_notes()
             return 0
     except PoolError as exc:
         print(f"error: {exc}")

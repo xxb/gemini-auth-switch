@@ -110,6 +110,19 @@ class GeminiAuthPool:
         value = data.get("active")
         return value if isinstance(value, str) and value else None
 
+    def load_selected_auth_type(self) -> str | None:
+        settings = load_json(self.paths.settings_file, {})
+        if not isinstance(settings, dict):
+            return None
+        security = settings.get("security")
+        if not isinstance(security, dict):
+            return None
+        auth = security.get("auth")
+        if not isinstance(auth, dict):
+            return None
+        selected_type = auth.get("selectedType")
+        return selected_type if isinstance(selected_type, str) and selected_type else None
+
     def load_state(self) -> dict[str, Any]:
         return load_json(self.paths.state_file, {"active_profile": None, "last_switched_at": None})
 
@@ -205,7 +218,23 @@ class GeminiAuthPool:
             "email": self.load_live_email(),
             "has_live_creds": bool(live_creds),
             "live_creds_path": str(self.paths.live_creds_file),
+            "selected_auth_type": self.load_selected_auth_type(),
         }
+
+    def diagnostics_summary(self) -> dict[str, Any]:
+        current = self.current_summary()
+        current.update(
+            {
+                "token_cache_v1_exists": self.paths.token_cache_v1.exists(),
+                "token_cache_v2_exists": self.paths.token_cache_v2.exists(),
+                "force_file_storage": os.environ.get("GEMINI_FORCE_FILE_STORAGE") == "true",
+                "force_encrypted_file_storage": os.environ.get(
+                    "GEMINI_FORCE_ENCRYPTED_FILE_STORAGE"
+                )
+                == "true",
+            }
+        )
+        return current
 
     def list_profiles(self) -> list[ProfileSummary]:
         current_name = self.current_profile_name()
@@ -370,7 +399,8 @@ class GeminiAuthPool:
 
             command = [gemini_bin, *(gemini_args or [])]
             env = os.environ.copy()
-            env.setdefault("GEMINI_FORCE_FILE_STORAGE", "true")
+            env["GEMINI_FORCE_FILE_STORAGE"] = "true"
+            env["GEMINI_FORCE_ENCRYPTED_FILE_STORAGE"] = "false"
             result = subprocess.run(command, env=env)
             if result.returncode != 0:
                 self.restore_live_auth(backup_dir)
