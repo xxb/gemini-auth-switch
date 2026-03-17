@@ -5,10 +5,14 @@ from typing import Sequence
 
 from .paths import GeminiPaths
 from .store import (
+    AutoSwitchDecision,
     GeminiAuthPool,
+    ModelUsageStat,
     PoolError,
     ProfileCheckResult,
+    ProfilePickResult,
     ProfileSummary,
+    ProfileStatsResult,
     compact_output,
 )
 
@@ -86,6 +90,120 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         help="Only probe the first N saved profiles",
     )
+    stats_one_parser = subparsers.add_parser(
+        "stats",
+        help="Collect Gemini /stats output for one saved profile",
+    )
+    stats_one_parser.add_argument("name", help="Saved profile name to inspect")
+    stats_one_parser.add_argument(
+        "--gemini-bin", default="gemini", help="Gemini executable to launch"
+    )
+    stats_one_parser.add_argument(
+        "--gemini-arg",
+        action="append",
+        default=[],
+        help="Extra argument passed to Gemini; may be supplied multiple times",
+    )
+    stats_one_parser.add_argument(
+        "--timeout",
+        type=float,
+        default=30.0,
+        help="Stats collection timeout in seconds",
+    )
+    stats_parser = subparsers.add_parser(
+        "stats-all",
+        help="Collect Gemini /stats output for all saved profiles",
+    )
+    stats_parser.add_argument("--gemini-bin", default="gemini", help="Gemini executable to launch")
+    stats_parser.add_argument(
+        "--gemini-arg",
+        action="append",
+        default=[],
+        help="Extra argument passed to Gemini; may be supplied multiple times",
+    )
+    stats_parser.add_argument(
+        "--timeout",
+        type=float,
+        default=30.0,
+        help="Per-profile stats timeout in seconds",
+    )
+    stats_parser.add_argument(
+        "--delay",
+        type=float,
+        default=5.0,
+        help="Sleep between profiles in seconds to reduce rapid quota polling",
+    )
+    stats_parser.add_argument(
+        "--limit",
+        type=int,
+        help="Only collect stats for the first N saved profiles",
+    )
+    quota_parser = subparsers.add_parser(
+        "quota",
+        help="Show cached quota data for one saved profile",
+    )
+    quota_parser.add_argument(
+        "name",
+        nargs="?",
+        help="Saved profile name to inspect; defaults to the current profile",
+    )
+    quota_parser.add_argument(
+        "--summary",
+        action="store_true",
+        help="Show only the cached summary line",
+    )
+    quota_all_parser = subparsers.add_parser(
+        "quota-all",
+        help="Show cached quota data for all saved profiles",
+    )
+    quota_all_parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Include per-model cached quota rows",
+    )
+    pick_parser = subparsers.add_parser(
+        "pick",
+        help="Choose the best saved profile from cached quota data",
+    )
+    pick_parser.add_argument(
+        "--match",
+        action="append",
+        default=[],
+        help="Case-insensitive keyword filter for model names; may be supplied multiple times",
+    )
+    auto_use_parser = subparsers.add_parser(
+        "auto-use",
+        help="Automatically keep or switch profiles using cached quota plus on-demand refresh",
+    )
+    auto_use_parser.add_argument(
+        "--match",
+        action="append",
+        default=[],
+        help="Case-insensitive keyword filter for model names; may be supplied multiple times",
+    )
+    auto_use_parser.add_argument(
+        "--min-remaining",
+        type=float,
+        default=15.0,
+        help="Keep the current profile when its matched quota after refresh is at or above this percentage",
+    )
+    auto_use_parser.add_argument(
+        "--stale-seconds",
+        type=float,
+        default=300.0,
+        help="Refresh a quota cache entry when it is older than this many seconds",
+    )
+    auto_use_parser.add_argument(
+        "--candidate-refresh-limit",
+        type=int,
+        default=2,
+        help="Maximum stale or missing non-current candidates to refresh before deciding",
+    )
+    auto_use_parser.add_argument(
+        "--gemini-bin",
+        default="gemini",
+        help="Gemini executable used to locate the official CLI core package",
+    )
 
     save_parser = subparsers.add_parser("save", help="Save the current live account")
     save_parser.add_argument("name", nargs="?", help="Profile name; defaults to live email if available")
@@ -161,6 +279,151 @@ def print_check_summary(results: list[ProfileCheckResult]) -> None:
             f"status={result.status:<{status_width}} "
             f"checked={result.checked_at} "
             f"detail={detail}"
+        )
+
+
+def print_model_usage(item: ModelUsageStat) -> None:
+    requests = item.requests
+    remaining = item.usage_remaining
+    reset_at_part = f" reset_at={item.reset_at}" if item.reset_at else ""
+    print(f"  model={item.model} requests={requests} remaining={remaining}{reset_at_part}")
+
+
+def format_lowest_remaining(result: ProfileStatsResult) -> str:
+    lowest = result.lowest_remaining_percent()
+    if lowest is None:
+        return "-"
+    return f"{lowest:.1f}%"
+
+
+def print_stats_result(result: ProfileStatsResult) -> None:
+    email_part = f" email={result.email}" if result.email else ""
+    auth_part = f" auth={result.auth_method}" if result.auth_method else ""
+    tier_part = f" tier={result.tier}" if result.tier else ""
+    label_part = f" usage={result.usage_label}" if result.usage_label else ""
+    print(
+        f"{result.status} profile={result.name}{email_part} checked={result.checked_at}"
+        f"{label_part} detail={result.detail}{auth_part}{tier_part}"
+    )
+    for item in result.models:
+        print_model_usage(item)
+
+
+def print_cached_quota_result(result: ProfileStatsResult, summary_only: bool = False) -> None:
+    email_part = f" email={result.email}" if result.email else ""
+    usage_part = f" usage={result.usage_label}" if result.usage_label else ""
+    refresh_part = ""
+    if result.last_refresh_status and result.last_refresh_status != "ok":
+        refresh_part = f" refresh={result.last_refresh_status}"
+        if result.blocked_until:
+            refresh_part = f"{refresh_part} blocked_until={result.blocked_until}"
+    print(
+        f"quota={result.status} profile={result.name}{email_part} checked={result.checked_at}"
+        f" lowest={format_lowest_remaining(result)} models={result.model_count()}{usage_part}"
+        f" detail={result.detail}{refresh_part}"
+    )
+    if summary_only:
+        return
+    for item in result.models:
+        print_model_usage(item)
+
+
+def print_cached_quota_summary(
+    results: list[ProfileStatsResult],
+    current_profile: str | None,
+    verbose: bool = False,
+) -> None:
+    name_width = max(len(result.name) for result in results)
+    email_width = max(len(result.email or "-") for result in results)
+    status_width = max(len(result.status) for result in results)
+    for result in results:
+        marker = "*" if result.name == current_profile else " "
+        email = result.email or "-"
+        line = (
+            f"{marker} {result.name:<{name_width}} "
+            f"email={email:<{email_width}} "
+            f"quota={result.status:<{status_width}} "
+            f"checked={result.checked_at} "
+            f"lowest={format_lowest_remaining(result):<6} "
+            f"models={result.model_count()}"
+        )
+        if verbose:
+            usage = result.usage_label or "-"
+            detail = compact_output(result.detail, limit=96)
+            line = f"{line} usage={usage} detail={detail}"
+            if result.last_refresh_status and result.last_refresh_status != "ok":
+                line = f"{line} refresh={result.last_refresh_status}"
+                if result.blocked_until:
+                    line = f"{line} blocked_until={result.blocked_until}"
+        print(line)
+        if verbose:
+            for item in result.models:
+                print_model_usage(item)
+
+
+def print_pick_result(result: ProfilePickResult) -> None:
+    marker = "*" if result.is_current else " "
+    email_part = f" email={result.email}" if result.email else ""
+    tier_part = f" tier={result.tier}" if result.tier else ""
+    usage_part = f" usage={result.usage_label}" if result.usage_label else ""
+    health_part = f" health={result.health_status or '-'}"
+    filters = ",".join(result.match_terms) if result.match_terms else "-"
+    print(
+        f"{marker} picked profile={result.name}{email_part} model={result.matched_model} "
+        f"remaining={result.usage_remaining} quota_checked={result.quota_checked_at}"
+        f"{health_part}{usage_part}{tier_part}"
+    )
+    print(f"filters match={filters}")
+
+
+def print_auto_switch_decision(decision: AutoSwitchDecision) -> None:
+    result = decision.selected
+    email_part = f" email={result.email}" if result.email else ""
+    tier_part = f" tier={result.tier}" if result.tier else ""
+    usage_part = f" usage={result.usage_label}" if result.usage_label else ""
+    filters = ",".join(result.match_terms) if result.match_terms else "-"
+    if decision.action == "switch":
+        previous = decision.current_profile or "-"
+        print(
+            f"switched from={previous} to={result.name}{email_part} model={result.matched_model} "
+            f"remaining={result.usage_remaining} threshold={decision.threshold_percent:.1f}% "
+            f"quota_checked={result.quota_checked_at} health={result.health_status or '-'}"
+            f"{usage_part}{tier_part} reason={decision.reason}"
+        )
+        print(f"filters match={filters}")
+        print_post_switch_notes()
+        return
+
+    print(
+        f"kept profile={result.name}{email_part} model={result.matched_model} "
+        f"remaining={result.usage_remaining} threshold={decision.threshold_percent:.1f}% "
+        f"quota_checked={result.quota_checked_at} health={result.health_status or '-'}"
+        f"{usage_part}{tier_part} reason={decision.reason}"
+    )
+    print(f"filters match={filters}")
+
+
+def print_stats_progress(event: str, payload: dict) -> None:
+    if event == "start":
+        email_part = f" email={payload['email']}" if payload.get("email") else ""
+        print(
+            f"collecting {payload['index']}/{payload['total']} "
+            f"profile={payload['name']}{email_part}",
+            flush=True,
+        )
+        return
+    if event == "result":
+        result: ProfileStatsResult = payload["result"]
+        print(
+            f"{result.status} profile={result.name} checked={result.checked_at} detail={result.detail}",
+            flush=True,
+        )
+        return
+    if event == "delay":
+        print(
+            f"waiting seconds={payload['seconds']:g} before profile "
+            f"{payload['next_index']}/{payload['total']}",
+            flush=True,
         )
 
 
@@ -287,6 +550,80 @@ def cmd_check(pool: GeminiAuthPool, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_stats(pool: GeminiAuthPool, args: argparse.Namespace) -> int:
+    print("note=stats reuses saved local credentials; it does not reopen browser login")
+    print(
+        "note=stats starts a fresh Gemini TTY session and runs /stats for the selected profile"
+    )
+    result = pool.stats_profile(
+        args.name,
+        gemini_bin=args.gemini_bin,
+        timeout_seconds=args.timeout,
+        gemini_args=args.gemini_arg,
+    )
+    print_stats_result(result)
+    print("note=latest quota snapshot was cached locally")
+    print("note=original live auth was restored after the stats run")
+    return 0
+
+
+def cmd_stats_all(pool: GeminiAuthPool, args: argparse.Namespace) -> int:
+    print("note=stats-all reuses saved local credentials; it does not reopen browser login")
+    print(
+        "note=each stats run starts a fresh Gemini TTY session and executes /stats; "
+        "use --delay to reduce rapid multi-account polling"
+    )
+    results = pool.stats_all_profiles(
+        gemini_bin=args.gemini_bin,
+        timeout_seconds=args.timeout,
+        delay_seconds=args.delay,
+        limit=args.limit,
+        gemini_args=args.gemini_arg,
+        progress_callback=print_stats_progress,
+    )
+    counts: dict[str, int] = {}
+    for result in results:
+        counts[result.status] = counts.get(result.status, 0) + 1
+    summary = " ".join(f"{name}={counts[name]}" for name in sorted(counts))
+    print(f"summary total={len(results)} {summary}")
+    print("results:")
+    for result in results:
+        print_stats_result(result)
+    print("note=latest quota snapshots were cached locally")
+    print("note=original live auth was restored after the stats run")
+    return 0
+
+
+def cmd_quota(pool: GeminiAuthPool, args: argparse.Namespace) -> int:
+    result = pool.quota_profile(args.name)
+    print_cached_quota_result(result, summary_only=args.summary)
+    return 0
+
+
+def cmd_quota_all(pool: GeminiAuthPool, args: argparse.Namespace) -> int:
+    results = pool.quota_all_profiles()
+    print_cached_quota_summary(results, pool.current_profile_name(), verbose=args.verbose)
+    return 0
+
+
+def cmd_pick(pool: GeminiAuthPool, args: argparse.Namespace) -> int:
+    result = pool.pick_profile(args.match)
+    print_pick_result(result)
+    return 0
+
+
+def cmd_auto_use(pool: GeminiAuthPool, args: argparse.Namespace) -> int:
+    decision = pool.auto_use_profile(
+        match_terms=args.match,
+        min_remaining_percent=args.min_remaining,
+        stale_seconds=args.stale_seconds,
+        candidate_refresh_limit=args.candidate_refresh_limit,
+        gemini_bin=args.gemini_bin,
+    )
+    print_auto_switch_decision(decision)
+    return 0
+
+
 def cmd_paths(pool: GeminiAuthPool) -> int:
     paths = pool.paths
     print(f"gemini_dir={paths.gemini_dir}")
@@ -294,6 +631,7 @@ def cmd_paths(pool: GeminiAuthPool) -> int:
     print(f"live_creds={paths.live_creds_file}")
     print(f"state_file={paths.state_file}")
     print(f"check_state_file={paths.check_state_file}")
+    print(f"quota_state_file={paths.quota_state_file}")
     return 0
 
 
@@ -313,6 +651,18 @@ def run(argv: Sequence[str] | None = None) -> int:
             return cmd_check(pool, args)
         if args.command == "check-all":
             return cmd_check_all(pool, args)
+        if args.command == "stats":
+            return cmd_stats(pool, args)
+        if args.command == "stats-all":
+            return cmd_stats_all(pool, args)
+        if args.command == "quota":
+            return cmd_quota(pool, args)
+        if args.command == "quota-all":
+            return cmd_quota_all(pool, args)
+        if args.command == "pick":
+            return cmd_pick(pool, args)
+        if args.command == "auto-use":
+            return cmd_auto_use(pool, args)
         if args.command == "paths":
             return cmd_paths(pool)
         if args.command == "save":

@@ -42,6 +42,14 @@ class GeminiPaths:
         return self.gemini_dir / "auth_check_state.json"
 
     @property
+    def quota_state_file(self) -> Path:
+        return self.gemini_dir / "auth_quota_state.json"
+
+    @property
+    def operation_lock_file(self) -> Path:
+        return self.gemini_dir / "auth_switch.lock"
+
+    @property
     def token_cache_v1(self) -> Path:
         return self.gemini_dir / "mcp-oauth-tokens.json"
 
