@@ -21,6 +21,8 @@ These assumptions were verified on 2026-03-17 on the development host:
 - A successful local switch means the live `oauth_creds.json` fingerprint matches the selected saved profile.
 - If a fresh Gemini CLI launch still shows "Verify your account" or suggests changing login, that is usually a Google-side account validation response (`VALIDATION_REQUIRED`), not a failed file switch.
 - The reference project `Besty0728/Gemini-CLI-Auth-Manager` uses the same basic pattern: overwrite `oauth_creds.json`, clear cache, restart Gemini CLI, and treat `VALIDATION_REQUIRED` as an account issue.
+- The switch flow only touches live auth files plus OAuth token caches. It does not intentionally remove unrelated Gemini state such as `projects.json`, `state.json`, `trustedFolders.json`, or custom commands.
+- A restarted Gemini process is still a new live process. So old in-memory chat context is not seamlessly preserved across an auth switch even though host-side metadata files remain on disk.
 
 ## Design Direction
 

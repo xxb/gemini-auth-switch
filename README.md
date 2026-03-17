@@ -98,6 +98,10 @@ The tool writes only under `~/.gemini`:
 
 Gemini CLI sessions typically cache auth state after startup. After switching profiles, restart any already-running Gemini CLI session before expecting the new account to take effect.
 
+`gemini-auth-switch` only rewrites Gemini auth files and clears Gemini OAuth token caches. It does not delete unrelated Gemini host files such as `projects.json`, `state.json`, `trustedFolders.json`, or command definitions. That means old saved workspace/session metadata is not wiped by `gswitch` itself.
+
+The practical limitation is process state: if you switch accounts and then restart Gemini to load the new auth, the already-open in-process conversation context is interrupted because the old Gemini process is gone. In short: saved host metadata stays, but a live running chat session is not seamlessly carried across an auth switch.
+
 ## Troubleshooting
 
 If `gswitch use ...` changes the live profile but a fresh `gemini` launch still says "Verify your account" or offers "change login", that is usually not a local switch failure. The official Gemini CLI can return `VALIDATION_REQUIRED` for a specific Google account, and the reference `Gemini-CLI-Auth-Manager` project documents the same behavior.
