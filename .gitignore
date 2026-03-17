@@ -1,0 +1,33 @@
+# Local agent/project instructions
+AGENTS.md
+GEMINI.md
+CLAUDE.md
+
+# Local agent workdirs and metadata
+.codex/
+.claude/
+.gemini/
+
+# Environment and secrets
+.env
+.env.*
+.python-version
+
+# Python build/test artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.venv/
+dist/
+build/
+*.egg-info/
+
+# Editor / OS noise
+.vscode/
+.idea/
+.DS_Store
