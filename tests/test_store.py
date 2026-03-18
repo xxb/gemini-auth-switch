@@ -22,6 +22,7 @@ from gemini_auth_switch.cli import run
 from gemini_auth_switch.store import (
     GeminiAuthPool,
     ModelUsageStat,
+    PoolError,
     QUOTA_SOURCE_API,
     QUOTA_SOURCE_STATS,
 )
@@ -1153,6 +1154,56 @@ class GeminiAuthPoolTests(unittest.TestCase):
         self.assertEqual(refreshed, ["b"])
         self.assertEqual(self.pool.current_profile_name(), "b")
 
+    def test_auto_use_profile_avoids_requested_profile(self) -> None:
+        self.seed_live_auth("rt-a", email="a@example.com")
+        self.pool.save_current("a")
+        self.seed_live_auth("rt-b", email="b@example.com")
+        self.pool.save_current("b")
+        self.pool.use_profile("a")
+
+        write_json(
+            self.paths.quota_state_file,
+            {
+                "profiles": {
+                    "a": make_quota_state_entry(
+                        "a@example.com",
+                        96.0,
+                        checked_at=iso_now(-10),
+                        source=QUOTA_SOURCE_API,
+                    ),
+                    "b": make_quota_state_entry(
+                        "b@example.com",
+                        82.0,
+                        checked_at=iso_now(-10),
+                        source=QUOTA_SOURCE_API,
+                    ),
+                },
+                "updated_at": iso_now(-10),
+            },
+        )
+        write_json(
+            self.paths.check_state_file,
+            {
+                "profiles": {
+                    "a": {"status": "ok", "checked_at": iso_now(-120)},
+                    "b": {"status": "ok", "checked_at": iso_now(-120)},
+                },
+                "updated_at": iso_now(-120),
+            },
+        )
+
+        decision = self.pool.auto_use_profile(
+            match_terms=["3.1-pro"],
+            min_remaining_percent=15.0,
+            candidate_refresh_limit=0,
+            avoid_profiles=["a"],
+        )
+
+        self.assertEqual(decision.action, "switch")
+        self.assertEqual(decision.current_profile, "a")
+        self.assertEqual(decision.selected.name, "b")
+        self.assertEqual(self.pool.current_profile_name(), "b")
+
     def test_auto_use_profile_respects_candidate_refresh_limit(self) -> None:
         self.seed_live_auth("rt-a", email="a@example.com")
         self.pool.save_current("a")
@@ -1320,6 +1371,43 @@ class GeminiAuthPoolTests(unittest.TestCase):
         self.assertEqual(decision.selected.name, "b")
         self.assertEqual(refreshed, ["c"])
 
+    def test_mark_profile_rate_limited_excludes_profile_from_pick(self) -> None:
+        self.seed_live_auth("rt-a", email="a@example.com")
+        self.pool.save_current("a")
+
+        write_json(
+            self.paths.quota_state_file,
+            {
+                "profiles": {
+                    "a": make_quota_state_entry(
+                        "a@example.com",
+                        91.0,
+                        checked_at=iso_now(-10),
+                        source=QUOTA_SOURCE_API,
+                    ),
+                },
+                "updated_at": iso_now(-10),
+            },
+        )
+
+        result = self.pool.mark_profile_rate_limited(
+            "a",
+            detail="429 Too Many Requests",
+            retry_after_seconds=45.0,
+        )
+
+        self.assertEqual(result.status, "rate_limited")
+        self.assertEqual(result.last_refresh_status, "rate_limited")
+        self.assertEqual(result.blocked_reason, "request rate limited")
+        self.assertIsNotNone(result.blocked_until)
+        self.assertEqual(result.model_count(), 1)
+
+        stored = self.pool.quota_profile("a")
+        self.assertEqual(stored.status, "rate_limited")
+        self.assertEqual(stored.model_count(), 1)
+        with self.assertRaisesRegex(PoolError, "no eligible cached quota match"):
+            self.pool.pick_profile(["3.1-pro"])
+
     def test_auto_use_command_prints_switch_decision(self) -> None:
         self.seed_live_auth("rt-a", email="a@example.com")
         self.pool.save_current("a")
@@ -1397,6 +1485,31 @@ class GeminiAuthPoolTests(unittest.TestCase):
         self.assertIn("switched from=a to=b", rendered)
         self.assertIn("threshold=15.0%", rendered)
         self.assertIn("filters match=3.1-pro", rendered)
+
+    def test_mark_rate_limited_command_updates_quota_state(self) -> None:
+        self.seed_live_auth("rt-a", email="a@example.com")
+        self.pool.save_current("a")
+
+        output = io.StringIO()
+        with patch("gemini_auth_switch.cli.GeminiPaths.from_home", return_value=self.paths):
+            with redirect_stdout(output):
+                exit_code = run(
+                    [
+                        "mark-rate-limited",
+                        "a",
+                        "--detail",
+                        "429 Too Many Requests",
+                        "--retry-after",
+                        "45",
+                    ]
+                )
+
+        rendered = output.getvalue()
+        self.assertEqual(exit_code, 0)
+        self.assertIn("marked profile=a quota=rate_limited", rendered)
+        stored = self.pool.quota_profile("a")
+        self.assertEqual(stored.status, "rate_limited")
+        self.assertIsNotNone(stored.blocked_until)
 
 
 if __name__ == "__main__":

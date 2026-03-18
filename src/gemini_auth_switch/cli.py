@@ -200,9 +200,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum stale or missing non-current candidates to refresh before deciding",
     )
     auto_use_parser.add_argument(
+        "--avoid-profile",
+        action="append",
+        default=[],
+        help="Temporarily exclude a saved profile from this decision; may be supplied multiple times",
+    )
+    auto_use_parser.add_argument(
         "--gemini-bin",
         default="gemini",
         help="Gemini executable used to locate the official CLI core package",
+    )
+
+    mark_rate_limited_parser = subparsers.add_parser(
+        "mark-rate-limited",
+        help=argparse.SUPPRESS,
+    )
+    mark_rate_limited_parser.add_argument("name")
+    mark_rate_limited_parser.add_argument(
+        "--detail",
+        default="Gemini request hit a rate limit.",
+    )
+    mark_rate_limited_parser.add_argument(
+        "--retry-after",
+        type=float,
+        default=None,
     )
 
     save_parser = subparsers.add_parser("save", help="Save the current live account")
@@ -619,8 +640,20 @@ def cmd_auto_use(pool: GeminiAuthPool, args: argparse.Namespace) -> int:
         stale_seconds=args.stale_seconds,
         candidate_refresh_limit=args.candidate_refresh_limit,
         gemini_bin=args.gemini_bin,
+        avoid_profiles=args.avoid_profile,
     )
     print_auto_switch_decision(decision)
+    return 0
+
+
+def cmd_mark_rate_limited(pool: GeminiAuthPool, args: argparse.Namespace) -> int:
+    result = pool.mark_profile_rate_limited(
+        args.name,
+        detail=args.detail,
+        retry_after_seconds=args.retry_after,
+    )
+    blocked_part = f" blocked_until={result.blocked_until}" if result.blocked_until else ""
+    print(f"marked profile={result.name} quota={result.status}{blocked_part} detail={result.detail}")
     return 0
 
 
@@ -663,6 +696,8 @@ def run(argv: Sequence[str] | None = None) -> int:
             return cmd_pick(pool, args)
         if args.command == "auto-use":
             return cmd_auto_use(pool, args)
+        if args.command == "mark-rate-limited":
+            return cmd_mark_rate_limited(pool, args)
         if args.command == "paths":
             return cmd_paths(pool)
         if args.command == "save":

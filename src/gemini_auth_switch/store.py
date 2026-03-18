@@ -827,6 +827,19 @@ class GeminiAuthPool:
             normalized.append(term)
         return normalized
 
+    def normalize_avoid_profiles(self, avoid_profiles: list[str] | None) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for raw_name in avoid_profiles or []:
+            name = self.validate_profile_name(raw_name)
+            if not self.profile_exists(name):
+                raise PoolError(f"unknown profile: {name}")
+            if name in seen:
+                continue
+            normalized.append(name)
+            seen.add(name)
+        return normalized
+
     def validate_remaining_threshold(self, threshold_percent: float) -> float:
         if threshold_percent < 0 or threshold_percent > 100:
             raise PoolError("min remaining threshold must be between 0 and 100")
@@ -859,7 +872,10 @@ class GeminiAuthPool:
         normalized_terms: list[str],
         current_name: str | None,
         check_profiles: dict[str, Any],
+        avoid_names: set[str] | None = None,
     ) -> ProfilePickResult | None:
+        if avoid_names and name in avoid_names:
+            return None
         quota_result = self.load_quota_result(name)
         if quota_result is None or quota_result.status != "ok":
             return None
@@ -899,12 +915,17 @@ class GeminiAuthPool:
             match_terms=normalized_terms,
         )
 
-    def pick_candidates(self, match_terms: list[str] | None = None) -> list[ProfilePickResult]:
+    def pick_candidates(
+        self,
+        match_terms: list[str] | None = None,
+        avoid_profiles: list[str] | None = None,
+    ) -> list[ProfilePickResult]:
         names = self.list_profile_names()
         if not names:
             raise PoolError("no saved profiles")
 
         normalized_terms = self.normalize_pick_match_terms(match_terms)
+        avoid_names = set(self.normalize_avoid_profiles(avoid_profiles))
         check_profiles = self.load_check_state()["profiles"]
         current_name = self.current_profile_name()
         candidates: list[ProfilePickResult] = []
@@ -914,6 +935,7 @@ class GeminiAuthPool:
                 normalized_terms=normalized_terms,
                 current_name=current_name,
                 check_profiles=check_profiles,
+                avoid_names=avoid_names,
             )
             if candidate is not None:
                 candidates.append(candidate)
@@ -930,8 +952,12 @@ class GeminiAuthPool:
             "no eligible cached quota candidates; run gswitch stats or gswitch stats-all first"
         )
 
-    def pick_profile(self, match_terms: list[str] | None = None) -> ProfilePickResult:
-        candidates = self.pick_candidates(match_terms)
+    def pick_profile(
+        self,
+        match_terms: list[str] | None = None,
+        avoid_profiles: list[str] | None = None,
+    ) -> ProfilePickResult:
+        candidates = self.pick_candidates(match_terms, avoid_profiles=avoid_profiles)
         return max(candidates, key=self.candidate_sort_key)
 
     def maybe_refresh_pick_candidate(
@@ -967,14 +993,16 @@ class GeminiAuthPool:
         stale_seconds: float = DEFAULT_QUOTA_STALE_SECONDS,
         candidate_refresh_limit: int = DEFAULT_CANDIDATE_REFRESH_LIMIT,
         gemini_bin: str = "gemini",
+        avoid_profiles: list[str] | None = None,
     ) -> AutoSwitchDecision:
         threshold = self.validate_remaining_threshold(min_remaining_percent)
         stale_seconds = self.validate_stale_seconds(stale_seconds)
         candidate_refresh_limit = self.validate_candidate_refresh_limit(candidate_refresh_limit)
         normalized_terms = self.normalize_pick_match_terms(match_terms)
+        avoid_names = set(self.normalize_avoid_profiles(avoid_profiles))
         current_name = self.current_profile_name()
         current_candidate: ProfilePickResult | None = None
-        if current_name is not None:
+        if current_name is not None and current_name not in avoid_names:
             current_candidate = self.maybe_refresh_pick_candidate(
                 current_name,
                 normalized_terms,
@@ -994,7 +1022,10 @@ class GeminiAuthPool:
             )
 
         try:
-            candidates = self.pick_candidates(normalized_terms)
+            candidates = self.pick_candidates(
+                normalized_terms,
+                avoid_profiles=list(avoid_names),
+            )
         except PoolError:
             candidates = []
 
@@ -1002,10 +1033,14 @@ class GeminiAuthPool:
         ordered_noncurrent_names = [
             item.name
             for item in sorted(candidates, key=self.candidate_sort_key, reverse=True)
-            if item.name != current_name
+            if item.name != current_name and item.name not in avoid_names
         ]
         for name in self.list_profile_names():
-            if name != current_name and name not in candidate_names:
+            if (
+                name != current_name
+                and name not in candidate_names
+                and name not in avoid_names
+            ):
                 ordered_noncurrent_names.append(name)
 
         refreshed_count = 0
@@ -1018,7 +1053,10 @@ class GeminiAuthPool:
             self.refresh_profile_quota(name, gemini_bin=gemini_bin)
             refreshed_count += 1
 
-        candidates = self.pick_candidates(normalized_terms)
+        candidates = self.pick_candidates(
+            normalized_terms,
+            avoid_profiles=list(avoid_names),
+        )
         selected = max(candidates, key=self.candidate_sort_key)
         if selected.is_current:
             return AutoSwitchDecision(
@@ -1046,6 +1084,61 @@ class GeminiAuthPool:
             selected=selected,
             threshold_percent=threshold,
         )
+
+    @operation_locked
+    def mark_profile_rate_limited(
+        self,
+        name: str,
+        detail: str = "Gemini request hit a rate limit.",
+        retry_after_seconds: float | None = None,
+    ) -> ProfileStatsResult:
+        profile_name = self.validate_profile_name(name)
+        if not self.profile_exists(profile_name):
+            raise PoolError(f"unknown profile: {profile_name}")
+
+        meta = self.load_profile_meta(profile_name)
+        existing_result = self.load_quota_result(profile_name)
+        checked_at = utc_now_iso()
+        compact_detail = compact_output(detail)
+        if not compact_detail:
+            compact_detail = "Gemini request hit a rate limit."
+        failure_streak = self.next_failure_streak(existing_result)
+        blocked_until = future_time_iso(
+            self.compute_failure_cooldown_seconds(
+                "rate_limited",
+                failure_streak,
+                retry_after_seconds=retry_after_seconds,
+            )
+        )
+
+        if existing_result is not None:
+            result = replace(existing_result)
+            if result.email is None:
+                result.email = meta.get("email")
+        else:
+            result = self.make_stats_result(
+                name=profile_name,
+                email=meta.get("email"),
+                status="rate_limited",
+                detail=compact_detail,
+                source=QUOTA_SOURCE_API,
+            )
+
+        result.status = "rate_limited"
+        result.detail = compact_detail
+        result.checked_at = checked_at
+        result.last_refresh_attempt_at = checked_at
+        result.last_refresh_status = "rate_limited"
+        result.last_refresh_detail = compact_detail
+        result.blocked_until = blocked_until
+        result.blocked_reason = "request rate limited"
+        result.failure_streak = failure_streak
+        result.retry_after_seconds = None
+        if result.source is None:
+            result.source = QUOTA_SOURCE_API
+
+        self.write_quota_result(result)
+        return result
 
     @operation_locked
     def save_current(self, name: str | None = None, overwrite: bool = False) -> ProfileSummary:

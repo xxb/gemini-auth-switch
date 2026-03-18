@@ -96,6 +96,8 @@ If the current account is still not good enough, `gswitch auto-use` refreshes up
 
 When a refresh attempt fails, `auto-use` now records a short local cooldown for that profile instead of hammering the same candidate again on the next run. For successful API snapshots it also stores each model's absolute `reset_at`, so a fully exhausted matched model can be skipped until its quota window resets.
 
+`gswitch` itself does not depend on `.cc-connect` or any other launcher. For runtime rotation, the intended integration pattern is: run `gswitch auto-use` before a non-interactive `gemini -p --output-format stream-json` request, and if the very first streamed event is still a 429-style result error, mark that profile as rate-limited, exclude it from the next decision with `gswitch auto-use --avoid-profile ...`, switch once, and retry the request exactly one time. Any local wrapper or launcher can implement that pattern.
+
 Switch accounts:
 
 ```bash

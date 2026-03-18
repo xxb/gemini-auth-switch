@@ -13,10 +13,10 @@
 
 ## v0.2
 
-- installable Gemini CLI hooks for automatic rotation
-- build hook decisions on top of cached `pick` and incremental `auto-use` logic
+- launcher- or wrapper-driven runtime 429 detection and one-shot retry on top of cached `pick` and incremental `auto-use`
+- installable Gemini CLI hooks for observability or optional policy wiring after the wrapper path is stable
 - use API-refreshed quota cache as the primary rotation signal, with `/stats` as a manual fallback
-- quota-error detection in `AfterAgent`
+- quota-error reporting in `AfterAgent`
 - optional preflight rotation in `BeforeAgent`
 - configurable rotation order
 

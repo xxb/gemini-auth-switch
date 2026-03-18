@@ -26,6 +26,8 @@ These assumptions were verified on 2026-03-17 on the development host:
 - The switch flow only touches live auth files plus OAuth token caches. It does not intentionally remove unrelated Gemini state such as `projects.json`, `state.json`, `trustedFolders.json`, or custom commands.
 - A restarted Gemini process is still a new live process. So old in-memory chat context is not seamlessly preserved across an auth switch even though host-side metadata files remain on disk.
 - Gemini CLI `/stats` can expose per-model remaining quota from a fresh session. That is still useful as a manual inspection path, but it is heavier than the API refresh path and not identical to a full prompt probe. A profile may still reveal quota data even when a later prompt hits validation or model-specific limits.
+- A real prompt request can still hit a runtime 429 even after a successful preflight quota refresh, so automatic rotation needs one more layer: when the first `stream-json` event is already a rate-limit error, temporarily mark that profile as cooled down, exclude it from the next `auto-use` decision, and retry once with a different account.
+- That runtime retry layer should stay launcher-agnostic. `.cc-connect` is only one local integration point on this host, not a product requirement for the open-source project.
 
 ## Design Direction
 
@@ -37,7 +39,7 @@ Instead:
 2. Keep v0.1 standard-library-only.
 3. Base auto-switch decisions on local quota cache plus incremental API refresh, not full polling on every run.
 4. Record short refresh cooldowns after transient failures or rate limits so repeated `auto-use` calls do not keep hammering the same profile.
-5. Add hook-driven auto-rotation only after the account pool primitives are solid.
+5. Add launcher- or wrapper-driven runtime retry before hook-driven auto-rotation, because hooks are better for observability than first-response control flow.
 
 ## Current Scope
 
