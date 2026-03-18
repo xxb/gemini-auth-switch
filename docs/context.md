@@ -15,6 +15,8 @@ These assumptions were verified on 2026-03-17 on the development host:
 - The host also keeps unrelated global files such as `installation_id`, `projects.json`, `state.json`, `trustedFolders.json`, and `user_id`; these are not account-switch files.
 - Hook support exists for `BeforeAgent` and `AfterAgent`.
 - Custom commands still load from `~/.gemini/commands`.
+- For wrapper or launcher integration, resolve the installed `gswitch` command from `command -v gswitch` or the installer output; do not depend on a repository-local `.venv/bin/gswitch` path.
+- The preferred local install layout is a dedicated user-level virtual environment under a platform-appropriate data directory plus a stable launcher in the current Python user scripts directory, which avoids distro-managed `pip --user` restrictions and user-specific hardcoded paths.
 
 ## Auth Findings
 
@@ -40,6 +42,7 @@ Instead:
 3. Base auto-switch decisions on local quota cache plus incremental API refresh, not full polling on every run.
 4. Record short refresh cooldowns after transient failures or rate limits so repeated `auto-use` calls do not keep hammering the same profile.
 5. Add launcher- or wrapper-driven runtime retry before hook-driven auto-rotation, because hooks are better for observability than first-response control flow.
+6. Treat packaging and install layout as part of the product surface: future launcher integrations should resolve a stable user-level `gswitch` command instead of host-specific repository paths.
 
 ## Current Scope
 

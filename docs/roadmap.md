@@ -9,6 +9,7 @@
 - local quota cache entries tagged by source (`stats` or `api`)
 - per-model `reset_at` tracking plus failed-refresh cooldowns to avoid repeated 429s
 - process lock for live auth rewrites
+- user-level install path documentation and helper script for a stable `gswitch` command
 - repo docs that preserve requirements across sessions
 
 ## v0.2

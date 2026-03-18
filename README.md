@@ -43,10 +43,12 @@ Small, Linux-first account pooling for the official Gemini CLI.
 ## Installation
 
 ```bash
-python3 -m pip install -e .
+./scripts/install-user.sh
 ```
 
-This installs the `gswitch` command.
+The helper creates a dedicated user-level virtual environment under an OS-appropriate data directory, such as `~/.local/share/gemini-auth-switch/venv` on Linux or `~/Library/Application Support/gemini-auth-switch/venv` on macOS. It then links the `gswitch` launcher into the current Python user scripts directory.
+
+This avoids distro-managed `pip --user` issues on Linux hosts that enforce PEP 668, while still giving launchers a portable path. For launcher or wrapper integration, point at the installed command from `command -v gswitch` or from the path printed by the installer. Do not hardcode a repository-local virtualenv path, another user's home path, or a Linux-only launcher path assumption.
 
 `gswitch` discovers the Gemini Code Assist OAuth client constants from the installed official `gemini` CLI package on the local machine. If your local package layout differs, you can override discovery with `GSWITCH_OAUTH_CLIENT_ID` and `GSWITCH_OAUTH_CLIENT_SECRET`.
 
