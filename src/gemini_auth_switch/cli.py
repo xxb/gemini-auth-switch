@@ -17,6 +17,27 @@ from .store import (
 )
 
 
+def add_model_filter_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--match",
+        action="append",
+        default=[],
+        help="Case-insensitive AND keyword filter for model names; may be supplied multiple times",
+    )
+    parser.add_argument(
+        "--match-any",
+        action="append",
+        default=[],
+        help="Case-insensitive OR keyword filter for model names; may be supplied multiple times",
+    )
+    parser.add_argument(
+        "--exclude-match",
+        action="append",
+        default=[],
+        help="Case-insensitive exclusion keyword filter for model names; may be supplied multiple times",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="gswitch",
@@ -165,22 +186,12 @@ def build_parser() -> argparse.ArgumentParser:
         "pick",
         help="Choose the best saved profile from cached quota data",
     )
-    pick_parser.add_argument(
-        "--match",
-        action="append",
-        default=[],
-        help="Case-insensitive keyword filter for model names; may be supplied multiple times",
-    )
+    add_model_filter_arguments(pick_parser)
     auto_use_parser = subparsers.add_parser(
         "auto-use",
         help="Automatically keep or switch profiles using cached quota plus on-demand refresh",
     )
-    auto_use_parser.add_argument(
-        "--match",
-        action="append",
-        default=[],
-        help="Case-insensitive keyword filter for model names; may be supplied multiple times",
-    )
+    add_model_filter_arguments(auto_use_parser)
     auto_use_parser.add_argument(
         "--min-remaining",
         type=float,
@@ -388,13 +399,12 @@ def print_pick_result(result: ProfilePickResult) -> None:
     tier_part = f" tier={result.tier}" if result.tier else ""
     usage_part = f" usage={result.usage_label}" if result.usage_label else ""
     health_part = f" health={result.health_status or '-'}"
-    filters = ",".join(result.match_terms) if result.match_terms else "-"
     print(
         f"{marker} picked profile={result.name}{email_part} model={result.matched_model} "
         f"remaining={result.usage_remaining} quota_checked={result.quota_checked_at}"
         f"{health_part}{usage_part}{tier_part}"
     )
-    print(f"filters match={filters}")
+    print(render_model_filters(result))
 
 
 def print_auto_switch_decision(decision: AutoSwitchDecision) -> None:
@@ -402,7 +412,6 @@ def print_auto_switch_decision(decision: AutoSwitchDecision) -> None:
     email_part = f" email={result.email}" if result.email else ""
     tier_part = f" tier={result.tier}" if result.tier else ""
     usage_part = f" usage={result.usage_label}" if result.usage_label else ""
-    filters = ",".join(result.match_terms) if result.match_terms else "-"
     if decision.action == "switch":
         previous = decision.current_profile or "-"
         print(
@@ -411,7 +420,7 @@ def print_auto_switch_decision(decision: AutoSwitchDecision) -> None:
             f"quota_checked={result.quota_checked_at} health={result.health_status or '-'}"
             f"{usage_part}{tier_part} reason={decision.reason}"
         )
-        print(f"filters match={filters}")
+        print(render_model_filters(result))
         print_post_switch_notes()
         return
 
@@ -421,7 +430,14 @@ def print_auto_switch_decision(decision: AutoSwitchDecision) -> None:
         f"quota_checked={result.quota_checked_at} health={result.health_status or '-'}"
         f"{usage_part}{tier_part} reason={decision.reason}"
     )
-    print(f"filters match={filters}")
+    print(render_model_filters(result))
+
+
+def render_model_filters(result: ProfilePickResult) -> str:
+    match = ",".join(result.match_terms) if result.match_terms else "-"
+    match_any = ",".join(result.match_any_terms) if result.match_any_terms else "-"
+    exclude = ",".join(result.exclude_match_terms) if result.exclude_match_terms else "-"
+    return f"filters match={match} match_any={match_any} exclude={exclude}"
 
 
 def print_stats_progress(event: str, payload: dict) -> None:
@@ -628,7 +644,11 @@ def cmd_quota_all(pool: GeminiAuthPool, args: argparse.Namespace) -> int:
 
 
 def cmd_pick(pool: GeminiAuthPool, args: argparse.Namespace) -> int:
-    result = pool.pick_profile(args.match)
+    result = pool.pick_profile(
+        args.match,
+        args.match_any,
+        args.exclude_match,
+    )
     print_pick_result(result)
     return 0
 
@@ -636,6 +656,8 @@ def cmd_pick(pool: GeminiAuthPool, args: argparse.Namespace) -> int:
 def cmd_auto_use(pool: GeminiAuthPool, args: argparse.Namespace) -> int:
     decision = pool.auto_use_profile(
         match_terms=args.match,
+        match_any_terms=args.match_any,
+        exclude_terms=args.exclude_match,
         min_remaining_percent=args.min_remaining,
         stale_seconds=args.stale_seconds,
         candidate_refresh_limit=args.candidate_refresh_limit,

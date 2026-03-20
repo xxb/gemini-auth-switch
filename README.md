@@ -79,7 +79,9 @@ gswitch quota-all
 gswitch quota-all --verbose
 gswitch pick --match 3.1-pro
 gswitch pick --match 3.1 --match pro
+gswitch pick --match-any gemini-3 --exclude-match lite
 gswitch auto-use --match 3.1-pro
+gswitch auto-use --match-any gemini-3 --exclude-match lite
 gswitch auto-use --match 3.1-pro --min-remaining 15
 gswitch auto-use --match 3.1-pro --stale-seconds 300 --candidate-refresh-limit 2
 ```
@@ -90,7 +92,7 @@ gswitch auto-use --match 3.1-pro --stale-seconds 300 --candidate-refresh-limit 2
 
 `gswitch quota` and `gswitch quota-all` are read-only local views over the last saved quota snapshot, so they return immediately and do not start Gemini again.
 
-`gswitch pick` is also read-only. It looks at cached quota plus the last known health status from `check`, filters models with repeated `--match` keywords, excludes clearly unhealthy profiles, and prints the best current candidate without switching accounts for you.
+`gswitch pick` is also read-only. It looks at cached quota plus the last known health status from `check`, filters models with repeated `--match` keywords, optional `--match-any` OR keywords, and optional `--exclude-match` exclusions, then prints the best current candidate without switching accounts for you.
 
 `gswitch auto-use` starts from the same local cache, but it is no longer cache-only. It refreshes the current profile when its quota snapshot is missing, stale, unmatched, or still only `/stats`-derived, then keeps the current account if the refreshed matched quota is still at or above `--min-remaining`.
 
@@ -165,14 +167,14 @@ Pick view:
 
 ```text
   picked profile=research@example.com email=research@example.com model=gemini-3.1-pro-preview remaining=97.0% resets in 11h quota_checked=2026-03-17T10:05:00+00:00 health=ok usage=Auto (Gemini 3)
-filters match=3.1-pro
+filters match=3.1-pro match_any=- exclude=-
 ```
 
 Auto-use view:
 
 ```text
 switched from=primary@example.com to=research@example.com email=research@example.com model=gemini-3.1-pro-preview remaining=97.0% resets in 11h threshold=15.0% quota_checked=2026-03-17T10:05:00+00:00 health=ok usage=Auto (Gemini 3) reason=switched after refreshing the current profile and the top cached candidates because the current profile was missing, unhealthy, unmatched, or below threshold 15.0%
-filters match=3.1-pro
+filters match=3.1-pro match_any=- exclude=-
 restart any running Gemini CLI session to apply the new account
 ```
 
@@ -201,6 +203,8 @@ Use `gswitch quota` or `gswitch quota-all` when you only need the last recorded 
 If `quota` shows `refresh=rate_limited blocked_until=...`, `auto-use` will skip refreshing that profile again until the cooldown expires. If a matched model row shows `reset_at=...` and its remaining quota is already `0.0%`, that profile is also skipped until the earliest relevant reset time.
 
 Use `gswitch pick --match ...` when you want a fast local answer to "which saved profile currently looks best for this model family?" without starting Gemini again.
+
+Use `gswitch pick --match-any ... --exclude-match ...` when you want a broader preferred family such as "Gemini 3, but never lite".
 
 Use `gswitch auto-use --match ...` before launching a new Gemini CLI session when you want the tool to refresh only what it needs, keep the current account if it still looks healthy enough, and otherwise switch to the best refreshed alternative.
 

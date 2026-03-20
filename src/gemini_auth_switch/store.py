@@ -155,6 +155,8 @@ class ProfilePickResult:
     usage_label: str | None = None
     is_current: bool = False
     match_terms: list[str] = field(default_factory=list)
+    match_any_terms: list[str] = field(default_factory=list)
+    exclude_match_terms: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -819,11 +821,24 @@ class GeminiAuthPool:
         return results
 
     def normalize_pick_match_terms(self, match_terms: list[str] | None) -> list[str]:
+        return self.normalize_model_filter_terms(match_terms, "match")
+
+    def normalize_pick_match_any_terms(self, match_any_terms: list[str] | None) -> list[str]:
+        return self.normalize_model_filter_terms(match_any_terms, "match-any")
+
+    def normalize_pick_exclude_terms(self, exclude_terms: list[str] | None) -> list[str]:
+        return self.normalize_model_filter_terms(exclude_terms, "exclude-match")
+
+    def normalize_model_filter_terms(
+        self,
+        terms: list[str] | None,
+        label: str,
+    ) -> list[str]:
         normalized: list[str] = []
-        for raw_term in match_terms or []:
+        for raw_term in terms or []:
             term = raw_term.strip().lower()
             if not term:
-                raise PoolError("match term must not be empty")
+                raise PoolError(f"{label} term must not be empty")
             normalized.append(term)
         return normalized
 
@@ -849,6 +864,14 @@ class GeminiAuthPool:
         normalized_model = model.lower()
         return all(term in normalized_model for term in match_terms)
 
+    def model_matches_any_terms(self, model: str, match_any_terms: list[str]) -> bool:
+        normalized_model = model.lower()
+        return any(term in normalized_model for term in match_any_terms)
+
+    def model_matches_exclude_terms(self, model: str, exclude_terms: list[str]) -> bool:
+        normalized_model = model.lower()
+        return any(term in normalized_model for term in exclude_terms)
+
     def health_status_is_pick_eligible(self, status: str | None) -> bool:
         if status is None:
             return True
@@ -857,19 +880,34 @@ class GeminiAuthPool:
     def matching_models(
         self,
         quota_result: ProfileStatsResult,
-        match_terms: list[str],
+        match_terms: list[str] | None = None,
+        match_any_terms: list[str] | None = None,
+        exclude_terms: list[str] | None = None,
     ) -> list[ModelUsageStat]:
+        normalized_terms = match_terms or []
+        normalized_any_terms = match_any_terms or []
+        normalized_exclude_terms = exclude_terms or []
         return [
             item
             for item in quota_result.models
             if item.remaining_percent is not None
-            and (not match_terms or self.model_matches_terms(item.model, match_terms))
+            and (not normalized_terms or self.model_matches_terms(item.model, normalized_terms))
+            and (
+                not normalized_any_terms
+                or self.model_matches_any_terms(item.model, normalized_any_terms)
+            )
+            and (
+                not normalized_exclude_terms
+                or not self.model_matches_exclude_terms(item.model, normalized_exclude_terms)
+            )
         ]
 
     def make_pick_candidate(
         self,
         name: str,
         normalized_terms: list[str],
+        normalized_any_terms: list[str],
+        normalized_exclude_terms: list[str],
         current_name: str | None,
         check_profiles: dict[str, Any],
         avoid_names: set[str] | None = None,
@@ -892,7 +930,12 @@ class GeminiAuthPool:
         if health_checked_at is not None and not isinstance(health_checked_at, str):
             health_checked_at = None
 
-        matched_models = self.matching_models(quota_result, normalized_terms)
+        matched_models = self.matching_models(
+            quota_result,
+            normalized_terms,
+            normalized_any_terms,
+            normalized_exclude_terms,
+        )
         if not matched_models:
             return None
 
@@ -913,11 +956,15 @@ class GeminiAuthPool:
             usage_label=quota_result.usage_label,
             is_current=name == current_name,
             match_terms=normalized_terms,
+            match_any_terms=normalized_any_terms,
+            exclude_match_terms=normalized_exclude_terms,
         )
 
     def pick_candidates(
         self,
         match_terms: list[str] | None = None,
+        match_any_terms: list[str] | None = None,
+        exclude_terms: list[str] | None = None,
         avoid_profiles: list[str] | None = None,
     ) -> list[ProfilePickResult]:
         names = self.list_profile_names()
@@ -925,6 +972,8 @@ class GeminiAuthPool:
             raise PoolError("no saved profiles")
 
         normalized_terms = self.normalize_pick_match_terms(match_terms)
+        normalized_any_terms = self.normalize_pick_match_any_terms(match_any_terms)
+        normalized_exclude_terms = self.normalize_pick_exclude_terms(exclude_terms)
         avoid_names = set(self.normalize_avoid_profiles(avoid_profiles))
         check_profiles = self.load_check_state()["profiles"]
         current_name = self.current_profile_name()
@@ -933,6 +982,8 @@ class GeminiAuthPool:
             candidate = self.make_pick_candidate(
                 name=name,
                 normalized_terms=normalized_terms,
+                normalized_any_terms=normalized_any_terms,
+                normalized_exclude_terms=normalized_exclude_terms,
                 current_name=current_name,
                 check_profiles=check_profiles,
                 avoid_names=avoid_names,
@@ -942,8 +993,12 @@ class GeminiAuthPool:
 
         if candidates:
             return candidates
-        if normalized_terms:
-            filters = ",".join(normalized_terms)
+        if normalized_terms or normalized_any_terms or normalized_exclude_terms:
+            filters = self.describe_model_filters(
+                normalized_terms,
+                normalized_any_terms,
+                normalized_exclude_terms,
+            )
             raise PoolError(
                 f"no eligible cached quota match for filters: {filters}; "
                 "run gswitch stats or gswitch stats-all first"
@@ -955,15 +1010,24 @@ class GeminiAuthPool:
     def pick_profile(
         self,
         match_terms: list[str] | None = None,
+        match_any_terms: list[str] | None = None,
+        exclude_terms: list[str] | None = None,
         avoid_profiles: list[str] | None = None,
     ) -> ProfilePickResult:
-        candidates = self.pick_candidates(match_terms, avoid_profiles=avoid_profiles)
+        candidates = self.pick_candidates(
+            match_terms,
+            match_any_terms,
+            exclude_terms,
+            avoid_profiles=avoid_profiles,
+        )
         return max(candidates, key=self.candidate_sort_key)
 
     def maybe_refresh_pick_candidate(
         self,
         profile_name: str,
         normalized_terms: list[str],
+        normalized_any_terms: list[str],
+        normalized_exclude_terms: list[str],
         stale_seconds: float,
         gemini_bin: str,
         force: bool = False,
@@ -975,12 +1039,16 @@ class GeminiAuthPool:
             current_result,
             normalized_terms,
             stale_seconds,
+            match_any_terms=normalized_any_terms,
+            exclude_terms=normalized_exclude_terms,
         )
         if should_refresh:
             self.refresh_profile_quota(profile_name, gemini_bin=gemini_bin)
         return self.make_pick_candidate(
             name=profile_name,
             normalized_terms=normalized_terms,
+            normalized_any_terms=normalized_any_terms,
+            normalized_exclude_terms=normalized_exclude_terms,
             current_name=current_name,
             check_profiles=check_profiles,
         )
@@ -989,6 +1057,8 @@ class GeminiAuthPool:
     def auto_use_profile(
         self,
         match_terms: list[str] | None = None,
+        match_any_terms: list[str] | None = None,
+        exclude_terms: list[str] | None = None,
         min_remaining_percent: float = 15.0,
         stale_seconds: float = DEFAULT_QUOTA_STALE_SECONDS,
         candidate_refresh_limit: int = DEFAULT_CANDIDATE_REFRESH_LIMIT,
@@ -999,6 +1069,8 @@ class GeminiAuthPool:
         stale_seconds = self.validate_stale_seconds(stale_seconds)
         candidate_refresh_limit = self.validate_candidate_refresh_limit(candidate_refresh_limit)
         normalized_terms = self.normalize_pick_match_terms(match_terms)
+        normalized_any_terms = self.normalize_pick_match_any_terms(match_any_terms)
+        normalized_exclude_terms = self.normalize_pick_exclude_terms(exclude_terms)
         avoid_names = set(self.normalize_avoid_profiles(avoid_profiles))
         current_name = self.current_profile_name()
         current_candidate: ProfilePickResult | None = None
@@ -1006,6 +1078,8 @@ class GeminiAuthPool:
             current_candidate = self.maybe_refresh_pick_candidate(
                 current_name,
                 normalized_terms,
+                normalized_any_terms,
+                normalized_exclude_terms,
                 stale_seconds,
                 gemini_bin,
             )
@@ -1024,6 +1098,8 @@ class GeminiAuthPool:
         try:
             candidates = self.pick_candidates(
                 normalized_terms,
+                normalized_any_terms,
+                normalized_exclude_terms,
                 avoid_profiles=list(avoid_names),
             )
         except PoolError:
@@ -1048,13 +1124,21 @@ class GeminiAuthPool:
             if refreshed_count >= candidate_refresh_limit:
                 break
             existing_result = self.load_quota_result(name)
-            if not self.quota_result_is_stale(existing_result, normalized_terms, stale_seconds):
+            if not self.quota_result_is_stale(
+                existing_result,
+                normalized_terms,
+                stale_seconds,
+                match_any_terms=normalized_any_terms,
+                exclude_terms=normalized_exclude_terms,
+            ):
                 continue
             self.refresh_profile_quota(name, gemini_bin=gemini_bin)
             refreshed_count += 1
 
         candidates = self.pick_candidates(
             normalized_terms,
+            normalized_any_terms,
+            normalized_exclude_terms,
             avoid_profiles=list(avoid_names),
         )
         selected = max(candidates, key=self.candidate_sort_key)
@@ -1373,6 +1457,19 @@ class GeminiAuthPool:
             item.name,
         )
 
+    def describe_model_filters(
+        self,
+        match_terms: list[str] | None = None,
+        match_any_terms: list[str] | None = None,
+        exclude_terms: list[str] | None = None,
+    ) -> str:
+        parts = [
+            f"match={','.join(match_terms or []) or '-'}",
+            f"match_any={','.join(match_any_terms or []) or '-'}",
+            f"exclude={','.join(exclude_terms or []) or '-'}",
+        ]
+        return " ".join(parts)
+
     def load_code_assist_constants(self, gemini_bin: str = "gemini") -> dict[str, str]:
         return load_official_gemini_cli_constants(gemini_bin)
 
@@ -1437,20 +1534,23 @@ class GeminiAuthPool:
     def matching_models_for_refresh_window(
         self,
         quota_result: ProfileStatsResult,
-        match_terms: list[str],
+        match_terms: list[str] | None = None,
+        match_any_terms: list[str] | None = None,
+        exclude_terms: list[str] | None = None,
     ) -> list[ModelUsageStat]:
-        if match_terms:
-            return self.matching_models(quota_result, match_terms)
-        return [
-            item
-            for item in quota_result.models
-            if item.remaining_percent is not None
-        ]
+        return self.matching_models(
+            quota_result,
+            match_terms,
+            match_any_terms,
+            exclude_terms,
+        )
 
     def quota_result_refresh_blocked_until(
         self,
         result: ProfileStatsResult | None,
-        match_terms: list[str],
+        match_terms: list[str] | None = None,
+        match_any_terms: list[str] | None = None,
+        exclude_terms: list[str] | None = None,
     ) -> str | None:
         if result is None:
             return None
@@ -1460,7 +1560,12 @@ class GeminiAuthPool:
             return blocked_until.replace(microsecond=0).isoformat()
         if result.status != "ok" or result.source != QUOTA_SOURCE_API:
             return None
-        relevant_models = self.matching_models_for_refresh_window(result, match_terms)
+        relevant_models = self.matching_models_for_refresh_window(
+            result,
+            match_terms,
+            match_any_terms,
+            exclude_terms,
+        )
         if not relevant_models:
             return None
         future_resets: list[datetime] = []
@@ -2027,10 +2132,17 @@ class GeminiAuthPool:
     def quota_result_is_stale(
         self,
         result: ProfileStatsResult | None,
-        match_terms: list[str],
-        stale_seconds: float,
+        match_terms: list[str] | None = None,
+        stale_seconds: float = DEFAULT_QUOTA_STALE_SECONDS,
+        match_any_terms: list[str] | None = None,
+        exclude_terms: list[str] | None = None,
     ) -> bool:
-        blocked_until = self.quota_result_refresh_blocked_until(result, match_terms)
+        blocked_until = self.quota_result_refresh_blocked_until(
+            result,
+            match_terms,
+            match_any_terms,
+            exclude_terms,
+        )
         if blocked_until is not None:
             return False
         if result is None:
@@ -2045,7 +2157,10 @@ class GeminiAuthPool:
             return True
         if age_seconds > stale_seconds:
             return True
-        if match_terms and not self.matching_models(result, match_terms):
+        if (
+            (match_terms or match_any_terms)
+            and not self.matching_models(result, match_terms, match_any_terms, exclude_terms)
+        ):
             return True
         return False
 

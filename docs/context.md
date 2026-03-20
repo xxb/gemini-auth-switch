@@ -30,6 +30,7 @@ These assumptions were verified on 2026-03-17 on the development host:
 - Gemini CLI `/stats` can expose per-model remaining quota from a fresh session. That is still useful as a manual inspection path, but it is heavier than the API refresh path and not identical to a full prompt probe. A profile may still reveal quota data even when a later prompt hits validation or model-specific limits.
 - A real prompt request can still hit a runtime 429 even after a successful preflight quota refresh, so automatic rotation needs one more layer: when the first `stream-json` event is already a rate-limit error, temporarily mark that profile as cooled down, exclude it from the next `auto-use` decision, and retry once with a different account.
 - That runtime retry layer should stay launcher-agnostic. `.cc-connect` is only one local integration point on this host, not a product requirement for the open-source project.
+- `pick` and `auto-use` need model-family filters that can express required keywords, broader preferred families, and explicit exclusions, so high-quota fallback models such as `lite` do not mask exhaustion on the models the launcher actually wants to use.
 
 ## Design Direction
 
@@ -57,6 +58,7 @@ v0.1 must provide:
 - collect per-profile quota stats via Gemini `/stats`
 - read cached per-profile quota snapshots without launching Gemini
 - pick the best saved account for matching models from cached quota
+- support AND/OR/exclusion model filters when picking or auto-switching, so launchers can prefer a model family without treating every reported model as equally relevant
 - automatically keep or switch accounts by incrementally refreshing cached quota before a new Gemini launch
 - launch a fresh login and capture it as a new profile
 

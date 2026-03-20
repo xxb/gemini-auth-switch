@@ -955,6 +955,125 @@ class GeminiAuthPoolTests(unittest.TestCase):
         self.assertIn("remaining=97.0% resets in 11h", rendered)
         self.assertIn("filters match=3.1-pro", rendered)
 
+    def test_pick_profile_supports_match_any_and_exclude_terms(self) -> None:
+        self.seed_live_auth("rt-a", email="a@example.com")
+        self.pool.save_current("a")
+        self.seed_live_auth("rt-b", email="b@example.com")
+        self.pool.save_current("b")
+
+        write_json(
+            self.paths.quota_state_file,
+            {
+                "profiles": {
+                    "a": {
+                        "status": "ok",
+                        "detail": "models=2 lowest_remaining=96.0%",
+                        "checked_at": "2026-03-17T10:00:00+00:00",
+                        "email": "a@example.com",
+                        "source": QUOTA_SOURCE_API,
+                        "models": [
+                            {
+                                "model": "gemini-3.1-flash-lite-preview",
+                                "requests": "-",
+                                "usage_remaining": "99.0% resets in 11h",
+                                "remaining_percent": 99.0,
+                                "reset_in": "11h",
+                            },
+                            {
+                                "model": "gemini-2.5-pro",
+                                "requests": "-",
+                                "usage_remaining": "96.0% resets in 11h",
+                                "remaining_percent": 96.0,
+                                "reset_in": "11h",
+                            },
+                        ],
+                    },
+                    "b": {
+                        "status": "ok",
+                        "detail": "models=2 lowest_remaining=72.0%",
+                        "checked_at": "2026-03-17T10:05:00+00:00",
+                        "email": "b@example.com",
+                        "source": QUOTA_SOURCE_API,
+                        "models": [
+                            {
+                                "model": "gemini-3.1-flash-lite-preview",
+                                "requests": "-",
+                                "usage_remaining": "98.0% resets in 11h",
+                                "remaining_percent": 98.0,
+                                "reset_in": "11h",
+                            },
+                            {
+                                "model": "gemini-3.1-pro-preview",
+                                "requests": "-",
+                                "usage_remaining": "72.0% resets in 11h",
+                                "remaining_percent": 72.0,
+                                "reset_in": "11h",
+                            },
+                        ],
+                    },
+                },
+                "updated_at": "2026-03-17T10:05:00+00:00",
+            },
+        )
+        write_json(
+            self.paths.check_state_file,
+            {
+                "profiles": {
+                    "a": {"status": "ok", "checked_at": "2026-03-17T09:00:00+00:00"},
+                    "b": {"status": "ok", "checked_at": "2026-03-17T09:05:00+00:00"},
+                },
+                "updated_at": "2026-03-17T09:05:00+00:00",
+            },
+        )
+
+        result = self.pool.pick_profile(
+            match_any_terms=["gemini-3"],
+            exclude_terms=["lite"],
+        )
+
+        self.assertEqual(result.name, "b")
+        self.assertEqual(result.matched_model, "gemini-3.1-pro-preview")
+        self.assertEqual(result.match_any_terms, ["gemini-3"])
+        self.assertEqual(result.exclude_match_terms, ["lite"])
+
+    def test_pick_command_prints_match_any_and_exclude_filters(self) -> None:
+        self.seed_live_auth("rt-a", email="a@example.com")
+        self.pool.save_current("a")
+
+        write_json(
+            self.paths.quota_state_file,
+            {
+                "profiles": {
+                    "a": {
+                        "status": "ok",
+                        "detail": "models=1 lowest_remaining=73.0%",
+                        "checked_at": "2026-03-17T10:00:00+00:00",
+                        "email": "a@example.com",
+                        "source": QUOTA_SOURCE_API,
+                        "models": [
+                            {
+                                "model": "gemini-3.1-pro-preview",
+                                "requests": "-",
+                                "usage_remaining": "73.0% resets in 11h",
+                                "remaining_percent": 73.0,
+                                "reset_in": "11h",
+                            }
+                        ],
+                    },
+                },
+                "updated_at": "2026-03-17T10:00:00+00:00",
+            },
+        )
+
+        output = io.StringIO()
+        with patch("gemini_auth_switch.cli.GeminiPaths.from_home", return_value=self.paths):
+            with redirect_stdout(output):
+                exit_code = run(["pick", "--match-any", "gemini-3", "--exclude-match", "lite"])
+
+        rendered = output.getvalue()
+        self.assertEqual(exit_code, 0)
+        self.assertIn("filters match=- match_any=gemini-3 exclude=lite", rendered)
+
     def test_quota_result_is_not_stale_during_failure_cooldown(self) -> None:
         result = self.pool.load_quota_result("missing")
         self.assertIsNone(result)
@@ -1197,6 +1316,90 @@ class GeminiAuthPoolTests(unittest.TestCase):
             min_remaining_percent=15.0,
             candidate_refresh_limit=0,
             avoid_profiles=["a"],
+        )
+
+        self.assertEqual(decision.action, "switch")
+        self.assertEqual(decision.current_profile, "a")
+        self.assertEqual(decision.selected.name, "b")
+        self.assertEqual(self.pool.current_profile_name(), "b")
+
+    def test_auto_use_profile_excludes_lite_models_from_threshold_decision(self) -> None:
+        self.seed_live_auth("rt-a", email="a@example.com")
+        self.pool.save_current("a")
+        self.seed_live_auth("rt-b", email="b@example.com")
+        self.pool.save_current("b")
+        self.pool.use_profile("a")
+
+        write_json(
+            self.paths.quota_state_file,
+            {
+                "profiles": {
+                    "a": {
+                        "status": "ok",
+                        "detail": "models=2 lowest_remaining=4.0%",
+                        "checked_at": iso_now(-10),
+                        "email": "a@example.com",
+                        "source": QUOTA_SOURCE_API,
+                        "models": [
+                            {
+                                "model": "gemini-3.1-flash-lite-preview",
+                                "requests": "-",
+                                "usage_remaining": "99.0% resets in 11h",
+                                "remaining_percent": 99.0,
+                                "reset_in": "11h",
+                            },
+                            {
+                                "model": "gemini-3.1-pro-preview",
+                                "requests": "-",
+                                "usage_remaining": "4.0% resets in 11h",
+                                "remaining_percent": 4.0,
+                                "reset_in": "11h",
+                            },
+                        ],
+                    },
+                    "b": {
+                        "status": "ok",
+                        "detail": "models=2 lowest_remaining=82.0%",
+                        "checked_at": iso_now(-10),
+                        "email": "b@example.com",
+                        "source": QUOTA_SOURCE_API,
+                        "models": [
+                            {
+                                "model": "gemini-3.1-flash-lite-preview",
+                                "requests": "-",
+                                "usage_remaining": "98.0% resets in 11h",
+                                "remaining_percent": 98.0,
+                                "reset_in": "11h",
+                            },
+                            {
+                                "model": "gemini-3.1-pro-preview",
+                                "requests": "-",
+                                "usage_remaining": "82.0% resets in 11h",
+                                "remaining_percent": 82.0,
+                                "reset_in": "11h",
+                            },
+                        ],
+                    },
+                },
+                "updated_at": iso_now(-10),
+            },
+        )
+        write_json(
+            self.paths.check_state_file,
+            {
+                "profiles": {
+                    "a": {"status": "ok", "checked_at": iso_now(-120)},
+                    "b": {"status": "ok", "checked_at": iso_now(-120)},
+                },
+                "updated_at": iso_now(-120),
+            },
+        )
+
+        decision = self.pool.auto_use_profile(
+            match_any_terms=["gemini-3"],
+            exclude_terms=["lite"],
+            min_remaining_percent=15.0,
+            candidate_refresh_limit=0,
         )
 
         self.assertEqual(decision.action, "switch")
